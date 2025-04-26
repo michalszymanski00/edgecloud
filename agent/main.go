@@ -1,0 +1,248 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"syscall"
+	"time"
+
+	"github.com/google/go-github/v53/github"
+)
+
+/* ── self-update settings ────────────────────────────────────────────────── */
+const (
+	Version        = "v0.4.1"
+	RepoOwner      = "my-org"
+	RepoName       = "edge-agent"
+	BinaryName     = "edge-agent-linux-arm64"
+	UpdateInterval = 24 * time.Hour
+)
+
+/* ── paths & defaults ──────────────────────────────────────────────────── */
+const certDir = "/etc/edge-agent/certs"
+
+var (
+	certPath = certDir + "/client.crt"
+	keyPath  = certDir + "/client.key"
+	caPath   = certDir + "/ca.crt"
+)
+
+/* ── payloads ──────────────────────────────────────────────────────────── */
+type Heartbeat struct {
+	DeviceID string    `json:"device_id"`
+	Ts       time.Time `json:"ts"`
+}
+
+type registerResp struct {
+	CertPem string `json:"cert_pem"`
+	CaPem   string `json:"ca_pem"`
+}
+
+/* ── HTTP helpers ──────────────────────────────────────────────────────── */
+func newTLSClient(loadCA bool) *http.Client {
+	cfg := &tls.Config{}
+	if loadCA {
+		if caPem, err := os.ReadFile(caPath); err == nil {
+			pool := x509.NewCertPool()
+			pool.AppendCertsFromPEM(caPem)
+			cfg.RootCAs = pool
+		}
+	}
+	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	// skip verification only on first boot
+	cfg.InsecureSkipVerify = cfg.RootCAs == nil
+
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: cfg},
+		Timeout:   5 * time.Second,
+	}
+}
+
+/* ── self-update loop ───────────────────────────────────────────────────── */
+func selfUpdateLoop() {
+	ticker := time.NewTicker(UpdateInterval)
+	defer ticker.Stop()
+	for {
+		if err := tryUpdate(); err != nil {
+			log.Printf("self-update failed: %v", err)
+		}
+		<-ticker.C
+	}
+}
+
+func tryUpdate() error {
+	ctx := context.Background()
+	client := github.NewClient(nil)
+
+	release, _, err := client.Repositories.GetLatestRelease(ctx, RepoOwner, RepoName)
+	if err != nil {
+		return fmt.Errorf("fetch latest release: %w", err)
+	}
+	latest := release.GetTagName()
+	if latest == Version {
+		return nil // already up-to-date
+	}
+
+	var assetURL string
+	for _, asset := range release.Assets {
+		if asset.GetName() == BinaryName+"-"+latest {
+			assetURL = asset.GetBrowserDownloadURL()
+			break
+		}
+	}
+	if assetURL == "" {
+		return errors.New("update asset not found")
+	}
+
+	resp, err := http.Get(assetURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	tmp, err := os.CreateTemp("", BinaryName)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		return err
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		return err
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	// atomic replace and re-exec
+	if err := os.Rename(tmp.Name(), execPath); err != nil {
+		return err
+	}
+	return syscall.Exec(execPath, os.Args, os.Environ())
+}
+
+/* ── enrolment ──────────────────────────────────────────────────────────── */
+func enroll(ctx context.Context, deviceID, regURL, token string) error {
+	if _, err := os.Stat(certPath); err == nil {
+		return nil
+	}
+
+	// generate key + CSR
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	os.MkdirAll(certDir, 0o700)
+	os.WriteFile(keyPath, keyPEM, 0o600)
+
+	csrBytes, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: deviceID},
+	}, key)
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrBytes})
+
+	// POST /register
+	reqBody, _ := json.Marshal(map[string]string{
+		"device_id": deviceID,
+		"csr_pem":   string(csrPEM),
+	})
+	req, _ := http.NewRequestWithContext(ctx, "POST", regURL+"/register", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-Register-Token", token)
+	}
+
+	resp, err := newTLSClient(false).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return errors.New("register: non-200 response")
+	}
+
+	var out registerResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return err
+	}
+
+	// save cert + CA
+	os.WriteFile(certPath, []byte(out.CertPem), 0o644)
+	os.WriteFile(caPath, []byte(out.CaPem), 0o644)
+	log.Print("enrolment succeeded")
+	return nil
+}
+
+/* ── heartbeat loop ─────────────────────────────────────────────────────── */
+func sendHeartbeat(ctx context.Context, api, id string) error {
+	hb := Heartbeat{DeviceID: id, Ts: time.Now().UTC()}
+	body, _ := json.Marshal(hb)
+
+	resp, err := newTLSClient(true).Post(api+"/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+/* ── main ───────────────────────────────────────────────────────────────── */
+func main() {
+	// start self-update background task
+	go selfUpdateLoop()
+
+	apiURL := getenv("API_URL", "https://192.168.101.10:8443")
+	regURL := getenv("REGISTER_URL", "https://192.168.101.10:8444")
+	token := os.Getenv("REGISTER_TOKEN")
+	device := getenv("DEVICE_ID", hostname())
+
+	ctx := context.Background()
+
+	if err := enroll(ctx, device, regURL, token); err != nil {
+		log.Fatalf("enrol failed: %v", err)
+	}
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		if err := sendHeartbeat(ctx, apiURL, device); err != nil {
+			log.Printf("heartbeat error: %v", err)
+		} else {
+			log.Print("heartbeat sent")
+		}
+		<-ticker.C
+	}
+}
+
+/* ── utils ─────────────────────────────────────────────────────────────── */
+func hostname() string {
+	h, _ := os.Hostname()
+	return h
+}
+
+func getenv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}

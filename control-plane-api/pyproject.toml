@@ -1,19 +1,9 @@
 [project]
 name = "control-plane-api"
 version = "0.1.0"
-description = ""
-authors = [
-    {name = "Michal",email = "531475@genpt.net"}
-]
-readme = "README.md"
-requires-python = ">=3.13"
 dependencies = [
+    "fastapi==0.110.1",
+    "uvicorn[standard]==0.29.0",
+    "SQLAlchemy[asyncio]==2.0.29",
+    "asyncpg==0.29.0",
 ]
-
-[tool.poetry]
-packages = [{include = "control_plane_api", from = "src"}]
-
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"

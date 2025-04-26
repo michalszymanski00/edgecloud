@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: edge
+      POSTGRES_PASSWORD: edgepass
+      POSTGRES_DB: edgecloud
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edge"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+
+  api:
+    build: ./control-plane-api
+    env_file: ./control-plane-api/.env
+    environment:                
+      REG_TOKEN: "my-super-secret-token"
+      ADMIN_TOKEN: "edgecloud-admin-secret"
+    ports:
+      - "8443:8443"          # secure mTLS traffic
+      - "8444:8444"          # enrollment /register
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./certs:/certs:ro
+      - ./api-certs:/api-certs:ro
+
+    # list-form avoids YAML-quoting pitfalls and clearly starts two servers
+    command:
+      - /bin/sh
+      - -c
+      - |
+        # secure port (client-cert required)
+        uvicorn control_plane_api.main:app \
+               --host 0.0.0.0 --port 8443 \
+               --ssl-keyfile /api-certs/api.key \
+               --ssl-certfile /api-certs/api.crt \
+               --ssl-ca-certs /certs/ca.crt \
+               --ssl-cert-reqs 2 & \
+        # enrollment port (no client cert)
+        uvicorn control_plane_api.main:app \
+               --host 0.0.0.0 --port 8444 \
+               --ssl-keyfile /api-certs/api.key \
+               --ssl-certfile /api-certs/api.crt \
+               --ssl-ca-certs /certs/ca.crt
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fk https://localhost:8444/docs || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -30,9 +31,7 @@ import (
 var Version = "dev"
 
 const (
-	// shortened interval for testing updates; revert to 24h in production
-	UpdateInterval = 24 * time.Hour
-	certDir        = "/etc/edge-agent/certs"
+	certDir = "/etc/edge-agent/certs"
 )
 
 var (
@@ -71,8 +70,8 @@ func newTLSClient(loadCA bool) *http.Client {
 }
 
 // selfUpdateLoop periodically checks GitHub for a newer release
-func selfUpdateLoop() {
-	ticker := time.NewTicker(UpdateInterval)
+func selfUpdateLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := tryUpdate(); err != nil {
@@ -81,7 +80,7 @@ func selfUpdateLoop() {
 	}
 }
 
-// tryUpdate fetches the latest GitHub release, verifies checksum, and replaces binary
+// tryUpdate fetches the latest GitHub release, verifies checksum, and replaces the binary
 func tryUpdate() error {
 	owner := os.Getenv("GITHUB_OWNER")
 	repo := os.Getenv("GITHUB_REPO")
@@ -172,7 +171,7 @@ func tryUpdate() error {
 		return fmt.Errorf("checksum mismatch: got %s, want %s", actual, expected)
 	}
 
-	// atomically replace binary and re-exec
+	// atomically replace binary and exit for systemd to restart
 	if err := os.Rename(tmp.Name(), execPath); err != nil {
 		return fmt.Errorf("replace binary: %w", err)
 	}
@@ -265,8 +264,26 @@ func sendHeartbeat(ctx context.Context, api, id string) error {
 }
 
 func main() {
+	// version flag
+	showVer := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+	if *showVer {
+		fmt.Println(Version)
+		return
+	}
+
+	// read update interval from env or use default
+	interval := 24 * time.Hour
+	if s := os.Getenv("UPDATE_INTERVAL"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil {
+			interval = d
+		} else {
+			log.Printf("invalid UPDATE_INTERVAL, using default: %v", err)
+		}
+	}
+
 	// start self-update loop
-	go selfUpdateLoop()
+	go selfUpdateLoop(interval)
 
 	apiURL := getenv("API_URL", "https://192.168.101.10:8443")
 	regURL := getenv("REGISTER_URL", "https://192.168.101.10:8444")

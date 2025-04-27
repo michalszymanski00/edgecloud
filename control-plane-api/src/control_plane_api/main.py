@@ -15,13 +15,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from .db import (
     init_db, async_session,
     Device, Heartbeat,
-    DeviceToken, IssuedCert,
+    DeviceToken, IssuedCert, Workflow
 )
 
 app = FastAPI(title="Edge-Cloud Control Plane (v0.4)")
 
 # ─── CORS ────────────────────────────────────────────────────────────────
-# Allow your dashboard origin(s); defaults to http://localhost:3000
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +32,7 @@ app.add_middleware(
 
 CA_CERT_PATH = "/certs/ca.crt"
 CA_KEY_PATH  = "/certs/ca.key"
+default_token = os.getenv("ADMIN_TOKEN", "")
 
 # ─── Pydantic models ─────────────────────────────────────────────────────
 class HeartbeatIn(BaseModel):
@@ -58,7 +58,14 @@ class TokenIn(BaseModel):
 class TokenOut(TokenIn):
     pass
 
-default_token = os.getenv("ADMIN_TOKEN", "")
+class WorkflowIn(BaseModel):
+    name: str
+    definition: dict
+
+class WorkflowOut(WorkflowIn):
+    id: int
+    created_at: datetime
+    updated_at: datetime
 
 # ─── Startup ─────────────────────────────────────────────────────────────
 @app.on_event("startup")
@@ -67,7 +74,6 @@ async def start_up() -> None:
     asyncio.create_task(cert_expiry_scan())
 
 async def cert_expiry_scan():
-    """Log certs that will expire within 30 days; runs once per day."""
     while True:
         cutoff = datetime.utcnow() + timedelta(days=30)
         async with async_session() as sess:
@@ -86,7 +92,7 @@ async def cert_expiry_scan():
 async def heartbeat(hb: HeartbeatIn):
     async with async_session() as sess:
         dev = await sess.get(Device, hb.device_id)
-        if dev is None:
+        if not dev:
             dev = Device(id=hb.device_id, last_seen=hb.ts)
             sess.add(dev)
         else:
@@ -112,7 +118,7 @@ async def register(
 ):
     async with async_session() as sess:
         tok = await sess.get(DeviceToken, payload.device_id)
-    if tok is None or tok.token != x_register_token:
+    if not tok or tok.token != x_register_token:
         raise HTTPException(status_code=401, detail="invalid token")
 
     with open(CA_KEY_PATH, "rb") as f:
@@ -187,4 +193,82 @@ async def delete_token(
     admin_guard(x_admin_token)
     async with async_session() as sess:
         await sess.execute(delete(DeviceToken).where(DeviceToken.device_id == device_id))
+        await sess.commit()
+
+# ─── Workflow CRUD ─────────────────────────────────────────────────────────
+@app.get(
+    "/devices/{device_id}/workflows",
+    response_model=List[WorkflowOut]
+)
+async def list_workflows(
+    device_id: str,
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token")
+):
+    admin_guard(x_admin_token)
+    async with async_session() as sess:
+        rows = (await sess.execute(
+            select(Workflow).where(Workflow.device_id == device_id)
+        )).scalars().all()
+        return rows
+
+@app.post(
+    "/devices/{device_id}/workflows",
+    response_model=WorkflowOut,
+    status_code=201
+)
+async def create_workflow(
+    device_id: str,
+    wf: WorkflowIn,
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token")
+):
+    admin_guard(x_admin_token)
+    async with async_session() as sess:
+        new = Workflow(
+            device_id=device_id,
+            name=wf.name,
+            definition=wf.definition
+        )
+        sess.add(new)
+        await sess.commit()
+        await sess.refresh(new)
+        return new
+
+@app.put(
+    "/devices/{device_id}/workflows/{workflow_id}",
+    response_model=WorkflowOut
+)
+async def update_workflow(
+    device_id: str,
+    workflow_id: int,
+    wf: WorkflowIn,
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token")
+):
+    admin_guard(x_admin_token)
+    async with async_session() as sess:
+        existing = await sess.get(Workflow, workflow_id)
+        if not existing or existing.device_id != device_id:
+            raise HTTPException(status_code=404, detail="not found")
+        existing.name = wf.name
+        existing.definition = wf.definition
+        await sess.commit()
+        await sess.refresh(existing)
+        return existing
+
+@app.delete(
+    "/devices/{device_id}/workflows/{workflow_id}",
+    status_code=204
+)
+async def delete_workflow(
+    device_id: str,
+    workflow_id: int,
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token")
+):
+    admin_guard(x_admin_token)
+    async with async_session() as sess:
+        await sess.execute(
+            delete(Workflow).where(
+                Workflow.id == workflow_id,
+                Workflow.device_id == device_id
+            )
+        )
         await sess.commit()

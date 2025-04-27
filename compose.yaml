@@ -20,7 +20,7 @@ services:
     env_file: ./control-plane-api/.env
     environment:                
       REG_TOKEN: "my-super-secret-token"
-      ADMIN_TOKEN: "edgecloud-admin-secret"
+      ADMIN_TOKEN: "my-super-secret-token"
     ports:
       - "8443:8443"          # secure mTLS traffic
       - "8444:8444"          # enrollment /register

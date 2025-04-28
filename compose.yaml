@@ -28,26 +28,26 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./certs:/certs:ro
-      - ./api-certs:/api-certs:ro
-
+      - ./certs/ca.crt:/certs/ca.crt:ro
+      - ./certs/server.crt:/certs/server.crt:ro
+      - ./certs/server.key:/certs/server.key:ro
     # list-form avoids YAML-quoting pitfalls and clearly starts two servers
     command:
       - /bin/sh
       - -c
       - |
-        # secure port (client-cert required)
+        # secure port (client‐cert required)
         uvicorn control_plane_api.main:app \
                --host 0.0.0.0 --port 8443 \
-               --ssl-keyfile /api-certs/api.key \
-               --ssl-certfile /api-certs/api.crt \
+               --ssl-keyfile /certs/server.key \
+               --ssl-certfile /certs/server.crt \
                --ssl-ca-certs /certs/ca.crt \
                --ssl-cert-reqs 2 & \
         # enrollment port (no client cert)
         uvicorn control_plane_api.main:app \
                --host 0.0.0.0 --port 8444 \
-               --ssl-keyfile /api-certs/api.key \
-               --ssl-certfile /api-certs/api.crt \
+               --ssl-keyfile /certs/server.key \
+               --ssl-certfile /certs/server.crt \
                --ssl-ca-certs /certs/ca.crt
 
     healthcheck:

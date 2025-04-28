@@ -2,7 +2,10 @@ module github.com/michalszymanski00/edgecloud/agent
 
 go 1.24.2
 
-require github.com/google/go-github/v53 v53.2.0
+require (
+	github.com/blang/semver v3.5.1+incompatible
+	github.com/google/go-github/v53 v53.2.0
+)
 
 require (
 	github.com/ProtonMail/go-crypto v0.0.0-20230217124315-7d5c6f04bbb8 // indirect

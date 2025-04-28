@@ -1,0 +1,17 @@
+[req]
+distinguished_name = req_distinguished_name
+req_extensions     = v3_req
+prompt             = no
+
+[req_distinguished_name]
+CN = 192.168.101.10
+
+[v3_req]
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @alt_names
+
+[alt_names]
+IP.1 = 192.168.101.10
+IP.2 = 192.168.0.94     # your laptop’s new IP
+DNS.1 = api.local      # if you use api.local in dev

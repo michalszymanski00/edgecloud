@@ -111,3 +111,52 @@ sudo systemctl enable --now edge-agent
 # 4. Start dashboard:
 cd dashboard
 npm run dev
+
+
+--- 
+
+## Important commands
+# 1. 
+export VERSION=vx.x.x
+# 2. 
+GOOS=linux GOARCH=arm64 \
+  go build \
+    -ldflags="-X 'main.Version=${VERSION}'" \
+    -o edge-agent-linux-arm64-${VERSION} \
+    main.go
+# optional verify 
+file edge-agent-linux-arm64-${VERSION}
+# 3. optional for releases
+shasum -a 256 edge-agent-linux-arm64-${VERSION} \
+  | awk '{print $1}' > edge-agent-linux-arm64-${VERSION}.sha256
+
+# 4. optional for releases
+gh release create ${VERSION} \
+  --title "edge-agent ${VERSION}" \
+  --notes "## What’s Changed
+
+- fix: …  
+- feat: …  
+" \
+  edge-agent-linux-arm64-${VERSION} \
+  edge-agent-linux-arm64-${VERSION}.sha256
+
+# 5. 
+scp edge-agent-linux-arm64-v0.4.4 admin@192.168.0.110:~/Desktop/edge-agent
+
+
+#on Pi
+
+# 1. Move it into place and make it executable
+sudo mv ~/Desktop/edge-agent /usr/local/bin/edge-agent
+sudo chmod +x /usr/local/bin/edge-agent
+
+# 2. (Re-)load systemd and restart the agent
+sudo systemctl daemon-reload
+sudo systemctl restart edge-agent
+
+# 3. Confirm it’s running the right version
+/usr/local/bin/edge-agent --version
+
+# 4. Tail the journal to verify heartbeats & workflows
+sudo journalctl -u edge-agent -f --no-pager

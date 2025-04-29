@@ -1,5 +1,0 @@
-Metadata-Version: 2.4
-Name: control-plane-api
-Version: 0.1.0
-Requires-Dist: fastapi==0.110.1
-Requires-Dist: uvicorn[standard]==0.29.0

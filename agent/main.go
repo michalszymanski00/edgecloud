@@ -26,6 +26,7 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/google/go-github/v53/github"
+	"github.com/robfig/cron/v3"
 	"golang.org/x/oauth2"
 )
 
@@ -55,6 +56,18 @@ type Heartbeat struct {
 type registerResp struct {
 	CertPem string `json:"cert_pem"`
 	CaPem   string `json:"ca_pem"`
+}
+
+// Workflow represents a device workflow
+type Workflow struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Definition struct {
+		Steps []struct {
+			Cmd string `json:"cmd"`
+		} `json:"steps"`
+	} `json:"definition"`
+	Schedule string `json:"schedule"`
 }
 
 // newTLSClient returns an HTTP client configured for (m)TLS
@@ -159,7 +172,6 @@ func tryUpdate() error {
 	if err != nil {
 		return fmt.Errorf("read checksum: %w", err)
 	}
-	// split off filename if present
 	expected := strings.Fields(string(raw))[0]
 
 	// download binary
@@ -277,17 +289,6 @@ func sendHeartbeat(ctx context.Context, api, id string) error {
 	return nil
 }
 
-// Workflow represents a device workflow
-type Workflow struct {
-	ID         int    `json:"id"`
-	Name       string `json:"name"`
-	Definition struct {
-		Steps []struct {
-			Cmd string `json:"cmd"`
-		} `json:"steps"`
-	} `json:"definition"`
-}
-
 // fetchWorkflows retrieves pending workflows using the register token
 func fetchWorkflows(ctx context.Context, api, device, token string) ([]Workflow, error) {
 	url := fmt.Sprintf("%s/devices/%s/workflows", api, device)
@@ -339,6 +340,60 @@ func runWorkflow(w Workflow) {
 	}
 }
 
+// syncJobs reconciles cron entries against the latest workflows
+func syncJobs(
+	wfs []Workflow,
+	c *cron.Cron,
+	entryIDs map[int]cron.EntryID,
+	schedules map[int]string,
+) {
+	active := make(map[int]bool)
+	for _, wf := range wfs {
+		active[wf.ID] = true
+
+		// remove any existing job if schedule is now empty
+		if wf.Schedule == "" {
+			if id, ok := entryIDs[wf.ID]; ok {
+				c.Remove(id)
+				delete(entryIDs, wf.ID)
+				delete(schedules, wf.ID)
+				log.Printf("removed scheduling for workflow %d", wf.ID)
+			}
+			continue
+		}
+
+		// add or update job if new or schedule changed
+		if old, ok := schedules[wf.ID]; !ok || old != wf.Schedule {
+			if id, ok := entryIDs[wf.ID]; ok {
+				c.Remove(id)
+			}
+			// capture wf for closure
+			wfc := wf
+			id, err := c.AddFunc(wf.Schedule, func() {
+				log.Printf("▶ scheduled run workflow %d: %s", wfc.ID, wfc.Name)
+				runWorkflow(wfc)
+			})
+			if err != nil {
+				log.Printf("invalid schedule for workflow %d (%s): %v", wf.ID, wf.Schedule, err)
+			} else {
+				entryIDs[wf.ID] = id
+				schedules[wf.ID] = wf.Schedule
+				log.Printf("scheduled workflow %d (%s) with %q", wf.ID, wf.Name, wf.Schedule)
+			}
+		}
+	}
+
+	// remove jobs for workflows that no longer exist
+	for id, eid := range entryIDs {
+		if !active[id] {
+			c.Remove(eid)
+			delete(entryIDs, id)
+			delete(schedules, id)
+			log.Printf("removed scheduling for deleted workflow %d", id)
+		}
+	}
+}
+
 func main() {
 	// version flag
 	showVer := flag.Bool("version", false, "print version and exit")
@@ -378,6 +433,15 @@ func main() {
 		log.Fatalf("enroll failed: %v", err)
 	}
 
+	// set up the cron scheduler
+	c := cron.New(cron.WithParser(cron.NewParser(
+		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional | cron.Descriptor,
+	)))
+	entryIDs := make(map[int]cron.EntryID)
+	schedules := make(map[int]string)
+	c.Start()
+	defer c.Stop()
+
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -392,9 +456,9 @@ func main() {
 			log.Printf("fetch workflows error: %v", err)
 			continue
 		}
-		for _, wf := range wfs {
-			runWorkflow(wf)
-		}
+
+		// reconcile our scheduled jobs with the latest workflows
+		syncJobs(wfs, c, entryIDs, schedules)
 	}
 }
 

@@ -19,13 +19,18 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/blang/semver"
 	"github.com/google/go-github/v53/github"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/robfig/cron/v3"
 	"golang.org/x/oauth2"
 )
@@ -38,6 +43,7 @@ const (
 	DefaultUpdateInterval = 24 * time.Hour
 	HeartbeatInterval     = 30 * time.Second
 	certDir               = "/etc/edge-agent/certs"
+	metricsAddr           = ":9090"
 )
 
 var (
@@ -45,6 +51,30 @@ var (
 	keyPath  = filepath.Join(certDir, "client.key")
 	caPath   = filepath.Join(certDir, "ca.crt")
 )
+
+// Prometheus metrics
+var (
+	heartbeatsSent = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "heartbeats_sent_total",
+		Help: "Total heartbeats sent.",
+	})
+	fetchSuccess = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "workflows_fetch_success_total",
+		Help: "Successful workflow fetches.",
+	})
+	fetchErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "workflows_fetch_errors_total",
+		Help: "Errors during workflow fetch.",
+	})
+	jobsScheduled = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "jobs_scheduled",
+		Help: "Current number of jobs scheduled.",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(heartbeatsSent, fetchSuccess, fetchErrors, jobsScheduled)
+}
 
 // Heartbeat payload
 type Heartbeat struct {
@@ -107,8 +137,6 @@ func tryUpdate() error {
 	owner := os.Getenv("GITHUB_OWNER")
 	repo := os.Getenv("GITHUB_REPO")
 	token := os.Getenv("GITHUB_TOKEN")
-
-	// if any are missing, skip self-update
 	if owner == "" || repo == "" || token == "" {
 		return nil
 	}
@@ -129,7 +157,6 @@ func tryUpdate() error {
 	latestTag := release.GetTagName()
 	currTag := Version
 
-	// SemVer comparison
 	latestV, err1 := semver.ParseTolerant(latestTag)
 	currV, err2 := semver.ParseTolerant(currTag)
 	if err1 == nil && err2 == nil {
@@ -145,25 +172,22 @@ func tryUpdate() error {
 		return err
 	}
 	binName := filepath.Base(execPath)
-	osName := runtime.GOOS
-	arch := runtime.GOARCH
-	assetName := fmt.Sprintf("%s-%s-%s-%s", binName, osName, arch, latestTag)
+	assetName := fmt.Sprintf("%s-%s-%s-%s", binName, runtime.GOOS, runtime.GOARCH, latestTag)
 	checksumName := assetName + ".sha256"
 
 	var assetURL, checksumURL string
-	for _, asset := range release.Assets {
-		switch asset.GetName() {
+	for _, a := range release.Assets {
+		switch a.GetName() {
 		case assetName:
-			assetURL = asset.GetBrowserDownloadURL()
+			assetURL = a.GetBrowserDownloadURL()
 		case checksumName:
-			checksumURL = asset.GetBrowserDownloadURL()
+			checksumURL = a.GetBrowserDownloadURL()
 		}
 	}
 	if assetURL == "" || checksumURL == "" {
 		return fmt.Errorf("assets %q or %q not found", assetName, checksumName)
 	}
 
-	// download & verify checksum
 	sumResp, err := http.Get(checksumURL)
 	if err != nil {
 		return fmt.Errorf("download checksum: %w", err)
@@ -175,7 +199,6 @@ func tryUpdate() error {
 	}
 	expected := strings.Fields(string(raw))[0]
 
-	// download binary
 	binResp, err := http.Get(assetURL)
 	if err != nil {
 		return fmt.Errorf("download asset: %w", err)
@@ -187,7 +210,6 @@ func tryUpdate() error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-
 	if _, err := io.Copy(tmp, binResp.Body); err != nil {
 		return fmt.Errorf("save asset: %w", err)
 	}
@@ -195,7 +217,6 @@ func tryUpdate() error {
 		return err
 	}
 
-	// checksum verify
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("seek asset: %w", err)
 	}
@@ -203,13 +224,12 @@ func tryUpdate() error {
 	if err != nil {
 		return fmt.Errorf("read asset: %w", err)
 	}
-	digest := sha256.Sum256(data)
-	actual := hex.EncodeToString(digest[:])
+	sum := sha256.Sum256(data)
+	actual := hex.EncodeToString(sum[:])
 	if actual != expected {
 		return fmt.Errorf("checksum mismatch: got %s want %s", actual, expected)
 	}
 
-	// atomic swap & restart
 	if err := os.Rename(tmp.Name(), execPath); err != nil {
 		return fmt.Errorf("replace binary: %w", err)
 	}
@@ -275,142 +295,148 @@ func enroll(ctx context.Context, deviceID, regURL, token string) error {
 	return nil
 }
 
-// sendHeartbeat posts a heartbeat
+// sendHeartbeat posts a heartbeat and updates metric
 func sendHeartbeat(ctx context.Context, api, id string) error {
 	hb := Heartbeat{DeviceID: id, Ts: time.Now().UTC()}
 	body, _ := json.Marshal(hb)
 	req, _ := http.NewRequestWithContext(ctx, "POST", api+"/heartbeat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := newTLSClient(true).Do(req)
-	if err != nil {
+	if _, err := newTLSClient(true).Do(req); err != nil {
 		return err
 	}
-	resp.Body.Close()
+	heartbeatsSent.Inc()
 	return nil
 }
 
-// fetchWorkflows retrieves pending workflows using the register token
+// fetchWorkflows retrieves workflows, logs metrics
 func fetchWorkflows(ctx context.Context, api, device, token string) ([]Workflow, error) {
 	url := fmt.Sprintf("%s/devices/%s/workflows", api, device)
-	log.Printf("[agent] fetching workflows: url=%q token=%q", url, token)
-
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		fetchErrors.Inc()
 		return nil, err
 	}
 	if token != "" {
 		req.Header.Set("X-Register-Token", token)
 	}
-
-	client := newTLSClient(true)
-	resp, err := client.Do(req)
+	resp, err := newTLSClient(true).Do(req)
 	if err != nil {
-		log.Printf("[agent] HTTP error: %v", err)
+		fetchErrors.Inc()
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	log.Printf("[agent] workflows HTTP status: %d", resp.StatusCode)
-	body, _ := io.ReadAll(resp.Body)
-	log.Printf("[agent] workflows raw body: %s", body)
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch workflows: %s", resp.Status)
+		fetchErrors.Inc()
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-
 	var wfs []Workflow
-	if err := json.Unmarshal(body, &wfs); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&wfs); err != nil {
+		fetchErrors.Inc()
 		return nil, err
 	}
-	log.Printf("[agent] parsed %d workflows", len(wfs))
+	fetchSuccess.Inc()
 	return wfs, nil
 }
 
-// runWorkflow executes each step locally
+// runWorkflow executes each step
 func runWorkflow(w Workflow) {
 	log.Printf("▶ running workflow %d: %s", w.ID, w.Name)
 	for _, step := range w.Definition.Steps {
 		log.Printf("  • exec: %s", step.Cmd)
-		cmd := exec.Command("sh", "-c", step.Cmd)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("    ✗ error: %v\n%s", err, out)
+		if out, err := exec.Command("sh", "-c", step.Cmd).CombinedOutput(); err != nil {
+			log.Printf("    ✗ %v\n%s", err, out)
 		} else {
-			log.Printf("    ✓ output: %s", out)
+			log.Printf("    ✓ %s", out)
 		}
 	}
 }
 
-// syncJobs reconciles cron entries against the latest workflows
-func syncJobs(
-	wfs []Workflow,
-	c *cron.Cron,
-	entryIDs map[int]cron.EntryID,
-	schedules map[int]string,
-) {
+// syncJobs reconciles cron entries under mutex
+func syncJobs(wfs []Workflow, c *cron.Cron, entryIDs map[int]cron.EntryID, schedules map[int]string, mu *sync.Mutex) {
+	mu.Lock()
+	defer mu.Unlock()
+
 	active := make(map[int]bool)
 	for _, wf := range wfs {
 		active[wf.ID] = true
 
-		// Determine schedule spec: prefer Recurrence if set, else Schedule
-		scheduleSpec := wf.Schedule
+		spec := wf.Schedule
 		if wf.Recurrence != nil && *wf.Recurrence != "" {
-			scheduleSpec = *wf.Recurrence
+			if p, err := parseRecurrence(*wf.Recurrence); err == nil {
+				spec = p
+			} else {
+				log.Printf("invalid recurrence for %d: %v", wf.ID, err)
+			}
 		}
 
-		// remove any existing job if scheduleSpec is now empty
-		if scheduleSpec == "" {
+		if spec == "" {
 			if id, ok := entryIDs[wf.ID]; ok {
 				c.Remove(id)
 				delete(entryIDs, wf.ID)
 				delete(schedules, wf.ID)
-				log.Printf("removed scheduling for workflow %d", wf.ID)
 			}
 			continue
 		}
-
-		// add or update job if new or schedule changed
-		if old, ok := schedules[wf.ID]; ok && old == scheduleSpec {
-			log.Printf("workflow %d (%s) schedule unchanged, skipping", wf.ID, wf.Name)
+		if old, ok := schedules[wf.ID]; ok && old == spec {
 			continue
 		}
-
-		// remove existing job if schedule changed
 		if id, ok := entryIDs[wf.ID]; ok {
 			c.Remove(id)
-			delete(entryIDs, wf.ID)
-			delete(schedules, wf.ID)
-			log.Printf("removed scheduling for workflow %d due to schedule change", wf.ID)
 		}
-
-		// capture wf for closure
 		wfc := wf
-		id, err := c.AddFunc(scheduleSpec, func() {
-			log.Printf("▶ scheduled run workflow %d: %s", wfc.ID, wfc.Name)
-			runWorkflow(wfc)
-		})
+		id, err := c.AddFunc(spec, func() { runWorkflow(wfc) })
 		if err != nil {
-			log.Printf("invalid schedule for workflow %d (%s): %v", wf.ID, scheduleSpec, err)
-		} else {
-			entryIDs[wf.ID] = id
-			schedules[wf.ID] = scheduleSpec
-			log.Printf("scheduled workflow %d (%s) with %q", wf.ID, wf.Name, scheduleSpec)
+			log.Printf("bad spec for %d: %v", wf.ID, err)
+			continue
 		}
+		entryIDs[wf.ID], schedules[wf.ID] = id, spec
 	}
 
-	// remove jobs for workflows that no longer exist
 	for id, eid := range entryIDs {
 		if !active[id] {
 			c.Remove(eid)
 			delete(entryIDs, id)
 			delete(schedules, id)
-			log.Printf("removed scheduling for deleted workflow %d", id)
 		}
+	}
+
+	jobsScheduled.Set(float64(len(entryIDs)))
+}
+
+// parseRecurrence supports human phrases
+func parseRecurrence(r string) (string, error) {
+	r = strings.ToLower(strings.TrimSpace(r))
+	switch {
+	case r == "hourly":
+		return "0 * * * *", nil
+	case strings.HasPrefix(r, "daily at "):
+		parts := strings.SplitN(strings.TrimPrefix(r, "daily at "), ":", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("invalid time: %s", r)
+		}
+		return fmt.Sprintf("%s %s * * *", parts[1], parts[0]), nil
+	case strings.HasPrefix(r, "weekly on "):
+		parts := strings.SplitN(strings.TrimPrefix(r, "weekly on "), " at ", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("invalid format: %s", r)
+		}
+		day := strings.ToLower(parts[0][:3])
+		dow := map[string]string{"sun": "0", "mon": "1", "tue": "2", "wed": "3", "thu": "4", "fri": "5", "sat": "6"}[day]
+		tp := strings.SplitN(parts[1], ":", 2)
+		if len(tp) != 2 {
+			return "", fmt.Errorf("invalid time: %s", parts[1])
+		}
+		return fmt.Sprintf("%s %s * * %s", tp[1], tp[0], dow), nil
+	default:
+		return "", fmt.Errorf("unsupported recurrence: %s", r)
 	}
 }
 
 func main() {
-	// version flag
+	// graceful shutdown
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVer {
@@ -418,68 +444,68 @@ func main() {
 		return
 	}
 
-	// update interval
+	// metrics & health
+	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	go func() {
+		log.Printf("metrics/health listening on %s", metricsAddr)
+		log.Fatal(http.ListenAndServe(metricsAddr, nil))
+	}()
+
+	// conditional self-update
 	updateInterval := DefaultUpdateInterval
 	if s := os.Getenv("UPDATE_INTERVAL"); s != "" {
-		if d, err := time.ParseDuration(s); err != nil {
-			log.Printf("invalid UPDATE_INTERVAL=%q, using default: %v", s, err)
-		} else {
+		if d, err := time.ParseDuration(s); err == nil {
 			updateInterval = d
 		}
 	}
-
-	// conditional self-update
-	if os.Getenv("GITHUB_OWNER") != "" &&
-		os.Getenv("GITHUB_REPO") != "" &&
-		os.Getenv("GITHUB_TOKEN") != "" {
+	if os.Getenv("GITHUB_OWNER") != "" && os.Getenv("GITHUB_REPO") != "" && os.Getenv("GITHUB_TOKEN") != "" {
 		go selfUpdateLoop(updateInterval)
-	} else {
-		log.Print("self-update disabled (set GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN)")
 	}
 
-	// core settings
-	apiURL := getenv("API_URL", "https://192.168.0.94:8443")
-	regURL := getenv("REGISTER_URL", "https://192.168.0.94:8444")
+	// enrollment
+	apiURL := getenv("API_URL", "https://localhost:8443")
+	regURL := getenv("REGISTER_URL", "https://localhost:8444")
 	token := os.Getenv("REGISTER_TOKEN")
 	device := getenv("DEVICE_ID", hostname())
-
-	ctx := context.Background()
 	if err := enroll(ctx, device, regURL, token); err != nil {
 		log.Fatalf("enroll failed: %v", err)
 	}
 
-	// set up the cron scheduler
-	c := cron.New(cron.WithParser(
-		cron.NewParser(
-			cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional | cron.Descriptor,
-		),
-	))
-	entryIDs := make(map[int]cron.EntryID)
-	schedules := make(map[int]string)
+	// cron scheduler
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional)
+	c := cron.New(cron.WithParser(parser))
 	c.Start()
 	defer c.Stop()
 
+	entryIDs := make(map[int]cron.EntryID)
+	schedules := make(map[int]string)
+	var mu sync.Mutex
+
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		if err := sendHeartbeat(ctx, apiURL, device); err != nil {
-			log.Printf("heartbeat error: %v", err)
-			continue
-		}
-		log.Print("heartbeat sent")
 
-		wfs, err := fetchWorkflows(ctx, apiURL, device, token)
-		if err != nil {
-			log.Printf("fetch workflows error: %v", err)
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("shutting down")
+			return
+		case <-ticker.C:
+			if err := sendHeartbeat(ctx, apiURL, device); err != nil {
+				log.Printf("heartbeat error: %v", err)
+			}
+			wfs, err := fetchWorkflows(ctx, apiURL, device, token)
+			if err != nil {
+				log.Printf("fetch error: %v", err)
+			} else {
+				syncJobs(wfs, c, entryIDs, schedules, &mu)
+			}
 		}
-
-		// reconcile our scheduled jobs with the latest workflows
-		syncJobs(wfs, c, entryIDs, schedules)
 	}
 }
 
-// getenv returns the env or fallback
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -487,7 +513,6 @@ func getenv(k, def string) string {
 	return def
 }
 
-// hostname returns os.Hostname()
 func hostname() string {
 	h, _ := os.Hostname()
 	return h

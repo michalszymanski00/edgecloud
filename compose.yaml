@@ -1,7 +1,8 @@
 version: "3.9"
 
-services:
-  db:
+services: # Top-level key
+
+  db: # Service definition, indented under services
     image: postgres:17
     environment:
       POSTGRES_USER: edge
@@ -14,17 +15,19 @@ services:
       interval: 3s
       timeout: 2s
       retries: 5
+    networks:
+      - default
 
-  api:
+  api: # Service definition, same level as db
     build: ./control-plane-api
     env_file: ./control-plane-api/.env
-    environment:                
+    environment:
       REG_TOKEN: "my-super-secret-token"
       ADMIN_TOKEN: "my-super-secret-token"
       USE_CREATE_ALL: 1
     ports:
-      - "8443:8443"       
-      - "8444:8444"       
+      - "8443:8443"
+      - "8444:8444"
     depends_on:
       db:
         condition: service_healthy
@@ -48,12 +51,73 @@ services:
           --ssl-keyfile /api-certs/api.key \
           --ssl-certfile /api-certs/api.crt \
           --ssl-ca-certs /certs/ca.crt
-
     healthcheck:
       test: ["CMD-SHELL", "curl -fk https://localhost:8444/docs || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - default
+      - monitoring_net
 
-volumes:
+  prometheus: # Service definition, same level as api, db
+    image: prom/prometheus:v2.52.0
+    user: "0:0" # Run as root to fix volume permissions
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus/data"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus/data
+    ports:
+      - "9090:9090"
+    networks:
+      monitoring_net:
+        aliases:
+          - prometheus
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    # Comment out the original command to prevent Alertmanager from starting/crashing
+    command:
+     - "--config.file=/etc/alertmanager/config.yml"
+     - "--storage.path=/alertmanager"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+        - "9093:9093"
+    networks:
+      - monitoring_net
+    restart: unless-stopped
+
+
+  grafana: # Service definition, same level as alertmanager
+    image: grafana/grafana:10.4.3 # Using specific version from previous file
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "changeme"
+    ports:
+      - "3001:3000" # Using specific port from previous file
+    networks:
+      - monitoring_net
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/:/etc/grafana/provisioning/:ro
+    restart: unless-stopped
+
+volumes: # Top-level key, same level as services
   pgdata:
+  prometheus-data:
+  alertmanager_data:
+  grafana_data:
+
+networks: # Top-level key, same level as services
+  default:
+  monitoring_net:
+    driver: bridge
+

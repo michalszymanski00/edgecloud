@@ -138,7 +138,7 @@ gh release create ${VERSION} \
   edge-agent-linux-arm64-${VERSION} \
   edge-agent-linux-arm64-${VERSION}.sha256
 
-# 5. 
+# 5. when previous release failed
 scp edge-agent-linux-arm64-v0.4.4 admin@192.168.0.110:~/Desktop/edge-agent
 
 

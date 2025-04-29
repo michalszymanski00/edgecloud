@@ -368,8 +368,8 @@ func main() {
 	}
 
 	// core settings
-	apiURL := getenv("API_URL", "https://192.168.101.10:8443")
-	regURL := getenv("REGISTER_URL", "https://192.168.101.10:8444")
+	apiURL := getenv("API_URL", "https://192.168.0.94:8443")
+	regURL := getenv("REGISTER_URL", "https://192.168.0.94:8444")
 	token := os.Getenv("REGISTER_TOKEN")
 	device := getenv("DEVICE_ID", hostname())
 

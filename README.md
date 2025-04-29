@@ -160,3 +160,16 @@ sudo systemctl restart edge-agent
 
 # 4. Tail the journal to verify heartbeats & workflows
 sudo journalctl -u edge-agent -f --no-pager
+
+
+
+#delete workflow
+curl -k -X DELETE https://localhost:8444/devices/pi-01/workflows/1 \
+  -H "X-Register-Token: my-super-secret-token" \
+  --cacert certs/ca.crt
+
+#check workflow
+curl -k -H "X-Register-Token: my-super-secret-token" \
+  https://localhost:8443/devices/pi-01/workflows \
+  --cacert certs/ca.crt
+

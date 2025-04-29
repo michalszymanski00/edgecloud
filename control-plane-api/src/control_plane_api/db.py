@@ -59,12 +59,17 @@ class IssuedCert(Base):
     )
 
 # ── workflows table ---------------------------------------------------------
+
 class Workflow(Base):
     __tablename__ = "workflows"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     device_id: Mapped[str] = mapped_column(String, ForeignKey("devices.id"), index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     definition: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+    schedule:   Mapped[dict] = mapped_column(JSON, nullable=True)
+    recurrence: Mapped[str]  = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         SA_DateTime(timezone=True), server_default=func.now()
     )

@@ -21,34 +21,33 @@ services:
     environment:                
       REG_TOKEN: "my-super-secret-token"
       ADMIN_TOKEN: "my-super-secret-token"
+      USE_CREATE_ALL: 1
     ports:
-      - "8443:8443"          # secure mTLS traffic
-      - "8444:8444"          # enrollment /register
+      - "8443:8443"       
+      - "8444:8444"       
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./certs/ca.crt:/certs/ca.crt:ro
-      - ./certs/server.crt:/certs/server.crt:ro
-      - ./certs/server.key:/certs/server.key:ro
-    # list-form avoids YAML-quoting pitfalls and clearly starts two servers
+      - ./api-certs/api.crt:/api-certs/api.crt:ro
+      - ./api-certs/api.key:/api-certs/api.key:ro
     command:
       - /bin/sh
       - -c
       - |
-        # secure port (client‐cert required)
         uvicorn control_plane_api.main:app \
-               --host 0.0.0.0 --port 8443 \
-               --ssl-keyfile /certs/server.key \
-               --ssl-certfile /certs/server.crt \
-               --ssl-ca-certs /certs/ca.crt \
-               --ssl-cert-reqs 2 & \
-        # enrollment port (no client cert)
+          --host 0.0.0.0 --port 8443 \
+          --ssl-keyfile /api-certs/api.key \
+          --ssl-certfile /api-certs/api.crt \
+          --ssl-ca-certs /certs/ca.crt \
+          --ssl-cert-reqs 1 &
+
         uvicorn control_plane_api.main:app \
-               --host 0.0.0.0 --port 8444 \
-               --ssl-keyfile /certs/server.key \
-               --ssl-certfile /certs/server.crt \
-               --ssl-ca-certs /certs/ca.crt
+          --host 0.0.0.0 --port 8444 \
+          --ssl-keyfile /api-certs/api.key \
+          --ssl-certfile /api-certs/api.crt \
+          --ssl-ca-certs /certs/ca.crt
 
     healthcheck:
       test: ["CMD-SHELL", "curl -fk https://localhost:8444/docs || exit 1"]

@@ -3,7 +3,7 @@ import asyncio
 import logging
 import hashlib
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,10 +18,10 @@ from .db import (
     DeviceToken, IssuedCert, Workflow
 )
 
-app = FastAPI(title="Edge-Cloud Control Plane (v0.4)")
+app = FastAPI(title="Edge-Cloud Control Plane (v0.4+)")
 
 # ─── CORS ────────────────────────────────────────────────────────────────
-origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.50.100.1:3000").split(",")
+origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -61,31 +61,49 @@ class TokenOut(TokenIn):
 class WorkflowIn(BaseModel):
     name: str
     definition: dict
+    schedule: Optional[str] = None
+    recurrence: Optional[str] = None
 
 class WorkflowOut(WorkflowIn):
     id: int
     created_at: datetime
     updated_at: datetime
 
+# ─── Helper: seed default token (Alembic-managed schema) ────────────────
+async def seed_token_only():
+    async with async_session() as sess:
+        res = await sess.execute(select(DeviceToken).limit(1))
+        if res.first() is None:
+            default = os.getenv("REG_TOKEN", "my-super-secret-token")
+            sess.add(DeviceToken(device_id="pi-01", token=default))
+            await sess.commit()
+
 # ─── Startup ─────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def start_up() -> None:
-    await init_db()
+    # choose create_all (dev) or Alembic + seed
+    if os.getenv("USE_CREATE_ALL", "") == "1":
+        await init_db()
+    else:
+        await seed_token_only()
+    # expiry checker
     asyncio.create_task(cert_expiry_scan())
 
 async def cert_expiry_scan():
     while True:
         cutoff = datetime.utcnow() + timedelta(days=30)
         async with async_session() as sess:
-            expiring = (await sess.execute(
-                select(IssuedCert).where(IssuedCert.not_after <= cutoff)
-            )).scalars().all()
+            expiring = (
+                await sess.execute(
+                    select(IssuedCert).where(IssuedCert.not_after <= cutoff)
+                )
+            ).scalars().all()
             for row in expiring:
                 logging.warning(
                     "CERT EXPIRING SOON: %s… device=%s expires=%s",
                     row.fingerprint[:16], row.device_id, row.not_after
                 )
-        await asyncio.sleep(24*3600)
+        await asyncio.sleep(24 * 3600)
 
 # ─── Heartbeat ────────────────────────────────────────────────────────────
 @app.post("/heartbeat")
@@ -105,9 +123,11 @@ async def heartbeat(hb: HeartbeatIn):
 @app.get("/devices", response_model=List[DeviceOut])
 async def list_devices():
     async with async_session() as sess:
-        rows = (await sess.execute(
-            select(Device).order_by(Device.last_seen.desc())
-        )).scalars().all()
+        rows = (
+            await sess.execute(
+                select(Device).order_by(Device.last_seen.desc())
+            )
+        ).scalars().all()
         return [DeviceOut(id=r.id, last_seen=r.last_seen) for r in rows]
 
 # ─── /register (device enrollment) ────────────────────────────────────────
@@ -116,16 +136,14 @@ async def register(
     payload: CsrIn,
     x_register_token: str | None = Header(None, alias="X-Register-Token"),
 ):
-    # validate token in DB
     async with async_session() as sess:
         tok = await sess.get(DeviceToken, payload.device_id)
     if not tok or tok.token != x_register_token:
         raise HTTPException(401, "invalid token")
 
-    # sign CSR...
-    with open(CA_KEY_PATH,"rb") as f:
-        ca_key = serialization.load_pem_private_key(f.read(),None)
-    with open(CA_CERT_PATH,"rb") as f:
+    with open(CA_KEY_PATH, "rb") as f:
+        ca_key = serialization.load_pem_private_key(f.read(), None)
+    with open(CA_CERT_PATH, "rb") as f:
         ca_cert = x509.load_pem_x509_certificate(f.read())
 
     try:
@@ -141,8 +159,8 @@ async def register(
         .issuer_name(ca_cert.subject)
         .public_key(csr.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.utcnow()-timedelta(minutes=1))
-        .not_valid_after(datetime.utcnow()+timedelta(days=730))
+        .not_valid_before(datetime.utcnow() - timedelta(minutes=1))
+        .not_valid_after(datetime.utcnow() + timedelta(days=730))
         .add_extension(
             x509.SubjectAlternativeName([x509.DNSName(payload.device_id)]),
             critical=False,
@@ -150,9 +168,8 @@ async def register(
         .sign(ca_key, hashes.SHA256())
     )
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
-    ca_pem   = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
+    ca_pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-    # store fingerprint
     fp = hashlib.sha256(cert_pem.encode()).hexdigest()
     async with async_session() as sess:
         sess.add(IssuedCert(
@@ -171,7 +188,7 @@ def require_admin(x_admin: str | None):
         raise HTTPException(401, "admin token required")
 
 @app.get("/tokens", response_model=List[TokenOut])
-async def list_tokens(x_admin_token: str|None = Header(None,alias="X-Admin-Token")):
+async def list_tokens(x_admin_token: str | None = Header(None, alias="X-Admin-Token")):
     require_admin(x_admin_token)
     async with async_session() as sess:
         return (await sess.execute(select(DeviceToken))).scalars().all()
@@ -179,34 +196,35 @@ async def list_tokens(x_admin_token: str|None = Header(None,alias="X-Admin-Token
 @app.post("/tokens", status_code=201)
 async def upsert_token(
     tok: TokenIn,
-    x_admin_token: str|None = Header(None,alias="X-Admin-Token")
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
 ):
     require_admin(x_admin_token)
     async with async_session() as sess:
         await sess.merge(DeviceToken(device_id=tok.device_id, token=tok.token))
         await sess.commit()
-    return {"status":"upserted"}
+    return {"status": "upserted"}
 
-@app.delete("/tokens/{device_id}",status_code=204)
+@app.delete("/tokens/{device_id}", status_code=204)
 async def delete_token(
     device_id: str,
-    x_admin_token: str|None = Header(None,alias="X-Admin-Token")
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
 ):
     require_admin(x_admin_token)
     async with async_session() as sess:
-        await sess.execute(delete(DeviceToken).where(DeviceToken.device_id==device_id))
+        await sess.execute(
+            delete(DeviceToken).where(DeviceToken.device_id == device_id)
+        )
         await sess.commit()
 
-# ─── Workflow CRUD (device uses register‐token) ───────────────────────────
+# ─── Workflow CRUD with schedule & recurrence ───────────────────────────────────
 @app.get(
     "/devices/{device_id}/workflows",
     response_model=List[WorkflowOut],
 )
 async def list_workflows(
     device_id: str,
-    x_register_token: str|None = Header(None,alias="X-Register-Token"),
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
 ):
-    # validate against DeviceToken
     async with async_session() as sess:
         tok = await sess.get(DeviceToken, device_id)
     if not tok or tok.token != x_register_token:
@@ -214,7 +232,7 @@ async def list_workflows(
 
     async with async_session() as sess:
         rows = (await sess.execute(
-            select(Workflow).where(Workflow.device_id==device_id)
+            select(Workflow).where(Workflow.device_id == device_id)
         )).scalars().all()
         return rows
 
@@ -225,7 +243,7 @@ async def list_workflows(
 async def create_workflow(
     device_id: str,
     wf: WorkflowIn,
-    x_register_token: str|None = Header(None,alias="X-Register-Token"),
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
 ):
     async with async_session() as sess:
         tok = await sess.get(DeviceToken, device_id)
@@ -233,7 +251,13 @@ async def create_workflow(
         raise HTTPException(401, "invalid token")
 
     async with async_session() as sess:
-        new = Workflow(device_id=device_id, name=wf.name, definition=wf.definition)
+        new = Workflow(
+            device_id=device_id,
+            name=wf.name,
+            definition=wf.definition,
+            schedule=wf.schedule,
+            recurrence=wf.recurrence,
+        )
         sess.add(new)
         await sess.commit()
         await sess.refresh(new)
@@ -247,7 +271,7 @@ async def update_workflow(
     device_id: str,
     workflow_id: int,
     wf: WorkflowIn,
-    x_register_token: str|None = Header(None,alias="X-Register-Token"),
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
 ):
     async with async_session() as sess:
         tok = await sess.get(DeviceToken, device_id)
@@ -256,10 +280,12 @@ async def update_workflow(
 
     async with async_session() as sess:
         ex = await sess.get(Workflow, workflow_id)
-        if ex is None or ex.device_id!=device_id:
+        if ex is None or ex.device_id != device_id:
             raise HTTPException(404, "not found")
         ex.name = wf.name
         ex.definition = wf.definition
+        ex.schedule = wf.schedule
+        ex.recurrence = wf.recurrence
         await sess.commit()
         await sess.refresh(ex)
         return ex
@@ -271,7 +297,7 @@ async def update_workflow(
 async def delete_workflow(
     device_id: str,
     workflow_id: int,
-    x_register_token: str|None = Header(None,alias="X-Register-Token"),
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
 ):
     async with async_session() as sess:
         tok = await sess.get(DeviceToken, device_id)
@@ -280,7 +306,7 @@ async def delete_workflow(
 
     async with async_session() as sess:
         await sess.execute(
-            delete(Workflow).
-              where(Workflow.id==workflow_id, Workflow.device_id==device_id)
+            delete(Workflow)
+              .where(Workflow.id == workflow_id, Workflow.device_id == device_id)
         )
         await sess.commit()

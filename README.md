@@ -1,8 +1,5 @@
 # Edge-Cloud Control Plane & Agent
 
-**Date:** 2025-04-26–27  
-**Participants:** You (Cloud DevOps Engineer), ChatGPT
-
 ---
 
 ## Overview

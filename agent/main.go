@@ -67,7 +67,8 @@ type Workflow struct {
 			Cmd string `json:"cmd"`
 		} `json:"steps"`
 	} `json:"definition"`
-	Schedule string `json:"schedule"`
+	Schedule   string  `json:"schedule"`
+	Recurrence *string `json:"recurrence"` // pointer to allow null
 }
 
 // newTLSClient returns an HTTP client configured for (m)TLS
@@ -351,8 +352,14 @@ func syncJobs(
 	for _, wf := range wfs {
 		active[wf.ID] = true
 
-		// remove any existing job if schedule is now empty
-		if wf.Schedule == "" {
+		// Determine schedule spec: prefer Recurrence if set, else Schedule
+		scheduleSpec := wf.Schedule
+		if wf.Recurrence != nil && *wf.Recurrence != "" {
+			scheduleSpec = *wf.Recurrence
+		}
+
+		// remove any existing job if scheduleSpec is now empty
+		if scheduleSpec == "" {
 			if id, ok := entryIDs[wf.ID]; ok {
 				c.Remove(id)
 				delete(entryIDs, wf.ID)
@@ -363,23 +370,31 @@ func syncJobs(
 		}
 
 		// add or update job if new or schedule changed
-		if old, ok := schedules[wf.ID]; !ok || old != wf.Schedule {
-			if id, ok := entryIDs[wf.ID]; ok {
-				c.Remove(id)
-			}
-			// capture wf for closure
-			wfc := wf
-			id, err := c.AddFunc(wf.Schedule, func() {
-				log.Printf("▶ scheduled run workflow %d: %s", wfc.ID, wfc.Name)
-				runWorkflow(wfc)
-			})
-			if err != nil {
-				log.Printf("invalid schedule for workflow %d (%s): %v", wf.ID, wf.Schedule, err)
-			} else {
-				entryIDs[wf.ID] = id
-				schedules[wf.ID] = wf.Schedule
-				log.Printf("scheduled workflow %d (%s) with %q", wf.ID, wf.Name, wf.Schedule)
-			}
+		if old, ok := schedules[wf.ID]; ok && old == scheduleSpec {
+			log.Printf("workflow %d (%s) schedule unchanged, skipping", wf.ID, wf.Name)
+			continue
+		}
+
+		// remove existing job if schedule changed
+		if id, ok := entryIDs[wf.ID]; ok {
+			c.Remove(id)
+			delete(entryIDs, wf.ID)
+			delete(schedules, wf.ID)
+			log.Printf("removed scheduling for workflow %d due to schedule change", wf.ID)
+		}
+
+		// capture wf for closure
+		wfc := wf
+		id, err := c.AddFunc(scheduleSpec, func() {
+			log.Printf("▶ scheduled run workflow %d: %s", wfc.ID, wfc.Name)
+			runWorkflow(wfc)
+		})
+		if err != nil {
+			log.Printf("invalid schedule for workflow %d (%s): %v", wf.ID, scheduleSpec, err)
+		} else {
+			entryIDs[wf.ID] = id
+			schedules[wf.ID] = scheduleSpec
+			log.Printf("scheduled workflow %d (%s) with %q", wf.ID, wf.Name, scheduleSpec)
 		}
 	}
 
@@ -434,9 +449,11 @@ func main() {
 	}
 
 	// set up the cron scheduler
-	c := cron.New(cron.WithParser(cron.NewParser(
-		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional | cron.Descriptor,
-	)))
+	c := cron.New(cron.WithParser(
+		cron.NewParser(
+			cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional | cron.Descriptor,
+		),
+	))
 	entryIDs := make(map[int]cron.EntryID)
 	schedules := make(map[int]string)
 	c.Start()

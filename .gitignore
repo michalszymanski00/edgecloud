@@ -1,24 +1,25 @@
-# --- Python -------------------------------------------------
-.venv*/          # local virtual-envs
-venv*/
+# Python
 __pycache__/
+*.py[cod]
 *.egg-info/
-.pytest_cache/
+.venv/
+env/
+*.sqlite3
 
-# --- Node / Next.js ----------------------------------------
-dashboard/node_modules/
-dashboard/.next/
-dashboard/dist/
+# Docker
+**/docker-compose.override.yml
 
-# --- build & runtime artefacts ------------------------------
-dist/
-build/
-*.log
+# Node
+**/node_modules/
+**/dist/
+**/.next/
 
-# --- certificates & secrets --------------------------------
-certs/
-api-certs/
-device-certs/
+# Certificates, secrets
+*.key
+*.crt
+*.csr
 
-# --- binaries ----------------------------------------------
-agent/edge-agent-linux-*
+# Editor
+.vscode/
+.idea/
+*.swp

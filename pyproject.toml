@@ -1,11 +1,9 @@
-# pyproject.toml  (repo root)
-
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "edgecloud"              # what “pip install edgecloud” gives you
+name = "edgecloud"
 version = "0.1.0"
 description = "Edge-Cloud control-plane API"
 readme = "README.md"
@@ -26,10 +24,9 @@ dev = [
   "psycopg2-binary",
 ]
 
-# ───── Tell setuptools how to find the *Python* code ─────
 [tool.setuptools]
-package-dir = {"" = "control-plane-api/src"}   # all packages live under that path
+package-dir = {"" = "control-plane-api/src"}   
 
 [tool.setuptools.packages.find]
-where   = ["control-plane-api/src"]            # only scan this dir
-include = ["control_plane_api*"]               # and only these pkgs
+where   = ["control-plane-api/src"]            
+include = ["control_plane_api*"]               

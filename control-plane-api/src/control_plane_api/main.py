@@ -8,7 +8,7 @@ from typing import AsyncGenerator, List, Optional
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from cryptography import x509
@@ -76,7 +76,8 @@ class TokenIn(BaseModel):
     device_id: str
     token:     str
 
-class TokenOut(TokenIn): pass
+class TokenOut(TokenIn): 
+    pass
 
 class WorkflowIn(BaseModel):
     name:       str

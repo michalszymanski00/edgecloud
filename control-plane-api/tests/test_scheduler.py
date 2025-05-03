@@ -8,8 +8,6 @@ from control_plane_api.main import (
     scheduler,
     enqueue_workflow_job,
 )
-from control_plane_api.db import async_session, Workflow, Job
-
 # make sure your env is set for in‑memory DB, etc.
 os.environ["USE_CREATE_ALL"] = "1"
 os.environ["ADMIN_TOKEN"]    = "my-super-secret-token"

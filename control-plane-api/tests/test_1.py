@@ -1,5 +1,7 @@
 import os
+import pytest_asyncio
 import pytest
+from datetime import datetime
 from httpx import AsyncClient
 
 from control_plane_api.main import app
@@ -11,13 +13,13 @@ os.environ["ADMIN_TOKEN"] = "admintok"
 # Database URL for in-memory SQLite (tests only)
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest_asyncio.fixture(scope="module", autouse=True)
 async def setup_db():
     # Initialize schema
     await init_db()
     yield
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     async with AsyncClient(app=app, base_url="http://testserver") as ac:
         yield ac

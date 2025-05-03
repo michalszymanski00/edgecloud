@@ -80,16 +80,23 @@ jobs:
           import os
           from sqlalchemy import create_engine, text
           from control_plane_api.db import Base
-          # drop asyncpg suffix so we get psycopg2
+
+          # strip +asyncpg so create_engine uses psycopg2
           sync_url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
           engine = create_engine(sync_url)
-          # create all tables (with current model)
+
+          # 1) create *all* tables/types from your current models
           Base.metadata.create_all(engine)
-          # revert the two columns that Alembic will add
+
+          # 2) undo the first two Alembic ops (schedule + recurrence)
+          # 3) undo the second Alembic op (jobs table + enum)
           with engine.begin() as conn:
               conn.execute(text("ALTER TABLE workflows DROP COLUMN IF EXISTS schedule"))
               conn.execute(text("ALTER TABLE workflows DROP COLUMN IF EXISTS recurrence"))
+              conn.execute(text("DROP TABLE IF EXISTS jobs CASCADE"))
+              conn.execute(text("DROP TYPE IF EXISTS jobstate CASCADE"))
           PY
+
 
       - name: Run Alembic migrations (upgrade to head)
         working-directory: control-plane-api

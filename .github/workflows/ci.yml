@@ -10,7 +10,7 @@ env:
   PY_VER: "3.12"
 
 jobs:
-  # ──────────────── 1. Lint / type-check ────────────────
+  # ──────────────── 1. Lint / type‐check ────────────────
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -21,8 +21,16 @@ jobs:
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Add pip user-bin to PATH
+      - name: Add pip user‐bin to PATH
         run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml','control-plane-api/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install linters
         run: |
@@ -35,7 +43,7 @@ jobs:
       - name: Run mypy
         run: mypy control-plane-api/src
 
-  # ──────────────── 2. Tests + migrations ───────────────
+  # ──────────────── 2. Tests + migrations ────────────────
   tests:
     runs-on: ubuntu-latest
 
@@ -43,9 +51,9 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: edge
+          POSTGRES_USER:     edge
           POSTGRES_PASSWORD: edgepass
-          POSTGRES_DB: edgecloud
+          POSTGRES_DB:       edgecloud
         ports: ["5432:5432"]
         options: >-
           --health-cmd="pg_isready -U edge -d edgecloud"
@@ -64,8 +72,16 @@ jobs:
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Add pip user-bin to PATH
+      - name: Add pip user‐bin to PATH
         run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml','control-plane-api/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install project & dev deps
         run: |
@@ -96,7 +112,6 @@ jobs:
               conn.execute(text("DROP TABLE IF EXISTS jobs CASCADE"))
               conn.execute(text("DROP TYPE IF EXISTS jobstate CASCADE"))
           PY
-
 
       - name: Run Alembic migrations (upgrade to head)
         working-directory: control-plane-api

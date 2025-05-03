@@ -1,0 +1,121 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: edge
+      POSTGRES_PASSWORD: edgepass
+      POSTGRES_DB: edgecloud
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edge"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+    networks: # Add db to the network
+      - app-network
+    restart: unless-stopped # Good practice
+  migrations:
+    build: ./control-plane-api
+    env_file: ./control-plane-api/.env
+    command: ["alembic", "upgrade", "head"]   # <— COMMENT REMOVED
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [app-network]
+
+  mig-dev:
+    extends: migrations                 # reuse the same image
+    command: [ "bash" ]                 # give us a shell
+    volumes:
+      # write new revision files back into the working tree
+      - ./control-plane-api/alembic/versions:/app/alembic/versions
+    networks: [app-network]
+    profiles: ["tools"]                 # so it never runs on `up`
+
+  api:
+    build: ./control-plane-api
+    env_file: ./control-plane-api/.env
+    environment:
+      REG_TOKEN: "my-super-secret-token"
+      ADMIN_TOKEN: "my-super-secret-token"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully   # wait until alembic passed
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+    volumes:
+      - ./certs/ca.crt:/certs/ca.crt:ro
+      - ./api-certs/api.crt:/api-certs/api.crt:ro
+      - ./api-certs/api.key:/api-certs/api.key:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        uvicorn control_plane_api.main:app \
+          --host 0.0.0.0 --port 8443 \
+          --ssl-keyfile /api-certs/api.key \
+          --ssl-certfile /api-certs/api.crt \
+          --ssl-ca-certs /certs/ca.crt \
+          --ssl-cert-reqs 1 &
+
+        exec uvicorn control_plane_api.main:app \
+          --host 0.0.0.0 --port 8444 \
+          --ssl-keyfile /api-certs/api.key \
+          --ssl-certfile /api-certs/api.crt \
+          --ssl-ca-certs /certs/ca.crt
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fk https://localhost:8444/docs || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [app-network]
+    restart: unless-stopped
+
+  # --- NEW SERVICES ---
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    volumes:
+      # Mount your Prometheus config (see next section)
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus # Persist Prometheus data
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090" # Access Prometheus UI
+    networks:
+      - app-network # Connect to the same network
+    restart: unless-stopped
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
+    volumes:
+      # Mount Grafana datasource config (see section after next)
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yaml
+      - grafana-data:/var/lib/grafana # Persist Grafana data
+    ports:
+      - "3001:3000" # Access Grafana UI
+    networks:
+      - app-network # Connect to the same network
+    environment: # Optional: set default credentials
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=password
+    restart: unless-stopped
+  # --- END NEW SERVICES ---
+
+volumes:
+  pgdata:
+  prometheus_data: {} # Define persistent volume for Prometheus
+  grafana-data: {} # Define persistent volume for Grafana
+
+networks: # Define the explicit network
+  app-network:
+    driver: bridge

@@ -1,6 +1,5 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-*.env
-tests/
+*
+!src/
+!alembic/
+!alembic.ini
+!pyproject.toml

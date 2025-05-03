@@ -201,21 +201,13 @@ async def heartbeat(
 async def heartbeat_bulk(req: BulkHeartbeatRequest):
     """
     Accept a list of {device_id, ts} items and upsert each heartbeat
-    inside a single transaction.
+    in a single transaction.
     """
     async with async_session() as sess:
         async with sess.begin():
             for hb in req.heartbeats:
                 heartbeat_requests.labels(device_id=hb.device_id).inc()
-                await sess.execute(
-                    insert(Device)
-                    .values(id=hb.device_id, last_seen=hb.ts)
-                    .on_conflict_do_update(
-                        index_elements=[Device.id],
-                        set_={"last_seen": hb.ts},
-                    )
-                )
-                sess.add(Heartbeat(device_id=hb.device_id, ts=hb.ts))
+                await _upsert_heartbeat(sess, hb.device_id, hb.ts)
     return
 
 # ── Fleet overview ───────────────────────────────────────────────────────

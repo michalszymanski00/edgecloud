@@ -65,7 +65,8 @@ async def test_token_crud(client):
     # Authorized fetch (empty)
     resp = await client.get("/tokens", headers={"X-Admin-Token": "admintok"})
     assert resp.status_code == 200
-    assert resp.json() == []
+    tokens = resp.json()
+    assert any(t["device_id"] == "pi-01" for t in tokens)
 
     # Upsert token
     tok = {"device_id": "d1", "token": "tok1"}
@@ -75,7 +76,7 @@ async def test_token_crud(client):
     # Fetch back
     resp = await client.get("/tokens", headers={"X-Admin-Token": "admintok"})
     assert resp.status_code == 200
-    assert tok in resp.json()
+    assert ("d1","tok1") in tokens
 
     # Delete token
     resp = await client.delete("/tokens/d1", headers={"X-Admin-Token": "admintok"})

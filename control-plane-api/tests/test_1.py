@@ -8,7 +8,7 @@ os.environ["DATABASE_URL"]    = "sqlite+aiosqlite:///:memory:"
 
 import pytest_asyncio
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 
 from control_plane_api.main import app
 from control_plane_api.db   import init_db

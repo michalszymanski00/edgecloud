@@ -1,7 +1,6 @@
 import os
 import pytest_asyncio
 import pytest
-from datetime import datetime
 from httpx import AsyncClient
 
 from control_plane_api.main import app

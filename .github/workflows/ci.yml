@@ -16,8 +16,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,9 +45,9 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: edge
+          POSTGRES_USER:     edge
           POSTGRES_PASSWORD: edgepass
-          POSTGRES_DB: edgecloud
+          POSTGRES_DB:       edgecloud
         ports:
           - "5432:5432"
         options: >-
@@ -61,18 +60,33 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://edge:edgepass@localhost:5432/edgecloud
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PY_VER }}
 
+      - name: Add pip user‐bin to PATH
+        run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
+
       - name: Install control-plane-api & dev tools
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Bootstrap schema from models
+        working-directory: control-plane-api
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine
+          from control_plane_api.db import Base
+          # strip asyncpg so create_engine uses psycopg2
+          url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
+          engine = create_engine(url)
+          Base.metadata.create_all(engine)
+          PY
 
       - name: Run Alembic migrations (upgrade to head)
         working-directory: control-plane-api

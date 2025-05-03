@@ -2,6 +2,7 @@ import os
 import pytest_asyncio
 import pytest
 from httpx import AsyncClient
+from httpx._transports.asgi import ASGITransport
 
 from control_plane_api.main import app
 from control_plane_api.db import init_db
@@ -20,7 +21,8 @@ async def setup_db():
 
 @pytest_asyncio.fixture
 async def client():
-    async with AsyncClient(app=app, base_url="http://testserver") as ac:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
 
 @pytest.mark.asyncio

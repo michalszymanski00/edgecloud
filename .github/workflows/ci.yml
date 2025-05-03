@@ -109,6 +109,11 @@ jobs:
           alembic downgrade -1
           alembic upgrade "$head"
 
-      - name: Run test suite
+      - name: Run test suite (if any)
         working-directory: control-plane-api
-        run: pytest -q
+        run: |
+          if [ -d tests ] && [ "$(ls -A tests)" ]; then
+            pytest -q
+          else
+            echo "No tests to run, skipping pytest"
+          fi

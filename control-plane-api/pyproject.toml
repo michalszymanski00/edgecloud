@@ -1,9 +1,0 @@
-[project]
-name = "control-plane-api"
-version = "0.1.0"
-dependencies = [
-    "fastapi==0.110.1",
-    "uvicorn[standard]==0.29.0",
-    "SQLAlchemy[asyncio]==2.0.29",
-    "asyncpg==0.29.0",
-]

@@ -69,12 +69,8 @@ jobs:
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Add pip user‐bin to PATH
-        run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
-
       - name: Install control-plane-api & dev tools
         run: |
-          cd control-plane-api
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
@@ -90,4 +86,5 @@ jobs:
           alembic upgrade "$head"
 
       - name: Run test suite
+        working-directory: control-plane-api
         run: pytest -q

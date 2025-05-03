@@ -4,6 +4,7 @@ import logging
 import hashlib
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, List, Optional
+import re
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -140,19 +141,45 @@ async def enqueue_workflow_job(workflow_id: int):
         ))
         await sess.commit()
 
+def validate_cron_expression(cron: str):
+    """ Validate the cron expression to ensure it's in the correct format. """
+    # A simple regex for basic cron validation (5 fields)
+    cron_regex = re.compile(r'^[\*\/0-9,\-]+ [\*\/0-9,\-]+ [\*\/0-9,\-]+ [\*\/0-9,\-]+ [\*\/0-9,\-]+$')
+    
+    # Check for valid cron expressions
+    if not cron_regex.match(cron):
+        # If the expression is invalid (e.g., '@every 20s'), raise an error
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid cron expression: {cron}"
+        )
+
 def schedule_cron_for(wf: Workflow):
     job_id = f"wf-{wf.id}"
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
+    
     if wf.schedule:
-        trigger = CronTrigger.from_crontab(wf.schedule)
-        scheduler.add_job(
-            enqueue_workflow_job,
-            trigger,
-            args=[wf.id],
-            id=job_id,
-            name=f"workflow {wf.id} ({wf.name})"
-        )
+        # Validate the cron expression before scheduling
+        validate_cron_expression(wf.schedule)
+        
+        cron_fields = wf.schedule.split()
+        if len(cron_fields) == 5:
+            try:
+                trigger = CronTrigger.from_crontab(wf.schedule)
+                scheduler.add_job(
+                    enqueue_workflow_job,
+                    trigger,
+                    args=[wf.id],
+                    id=job_id,
+                    name=f"workflow {wf.id} ({wf.name})"
+                )
+            except ValueError as e:
+                logging.error(f"Error parsing cron expression for workflow {wf.id}: {e}")
+        else:
+            # Log a warning if the cron expression is invalid
+            logging.warning(f"Invalid cron expression for workflow {wf.id}: {wf.schedule}")
+
 
 # ── Shared helpers ────────────────────────────────────────────────────────
 async def _upsert_heartbeat(sess: AsyncSession, device_id: str, ts: datetime):
@@ -191,24 +218,11 @@ async def cert_expiry_scan():
 # ── Single startup hook ──────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
-    # 1) DB init or seed
     if os.getenv("USE_CREATE_ALL") == "1":
         await init_db()
     else:
         await seed_token_only()
-
-    # 2) schedule existing workflows
-    async with async_session() as sess:
-        wfs = (await sess.execute(
-            select(Workflow).where(Workflow.schedule is not None)
-        )).scalars().all()
-        for wf in wfs:
-            schedule_cron_for(wf)
-
-    # 3) start scheduler
     scheduler.start()
-
-    # 4) kick off cert‐expiry scanner
     asyncio.create_task(cert_expiry_scan())
 
 # ── Heartbeat endpoints ───────────────────────────────────────────────────
@@ -372,6 +386,11 @@ async def create_workflow(
     tok = await sess.get(DeviceToken, device_id)
     if not tok or tok.token != x_register_token:
         raise HTTPException(401, "invalid token")
+    
+    # Validate the cron expression before creating the workflow
+    if wf.schedule:
+        validate_cron_expression(wf.schedule)
+    
     new = Workflow(
         device_id=device_id,
         name=wf.name,

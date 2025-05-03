@@ -67,13 +67,14 @@ class IssuedCert(Base):
 class Workflow(Base):
     __tablename__ = "workflows"
 
-    id:        Mapped[int]   = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id: Mapped[str]   = mapped_column(String, ForeignKey("devices.id"), index=True)
-    name:      Mapped[str]   = mapped_column(String, nullable=False)
-    definition:Mapped[dict]  = mapped_column(JSON,  nullable=False)
+    id:         Mapped[int]   = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id:  Mapped[str]   = mapped_column(String, ForeignKey("devices.id"), index=True)
+    name:       Mapped[str]   = mapped_column(String, nullable=False)
+    definition: Mapped[dict]  = mapped_column(JSON,    nullable=False)
 
-    schedule:   Mapped[dict | None] = mapped_column(JSON,    nullable=True)
-    recurrence: Mapped[str  | None] = mapped_column(String,  nullable=True)
+    # schedule field now stored as cron string
+    schedule:   Mapped[str | None] = mapped_column(String, nullable=True)
+    recurrence: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(SA_DateTime(timezone=True),
                                                  server_default=func.now())
@@ -115,16 +116,15 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id:          Mapped[int]  = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id:   Mapped[str]  = mapped_column(String,  ForeignKey("devices.id",     ondelete="CASCADE"), index=True)
-    workflow_id: Mapped[int]  = mapped_column(Integer, ForeignKey("workflows.id",   ondelete="CASCADE"), index=True)
+    device_id:   Mapped[str]  = mapped_column(String, ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    workflow_id: Mapped[int]  = mapped_column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), index=True)
 
-    # 🔧 fixed: use PgEnum and keep it **inside** the class
     state: Mapped[JobState] = mapped_column(
         PgEnum(
             JobState,
-            name="jobstate",                     # existing DB enum name
-            create_constraint=False,             # don’t recreate the type
-            values_callable=lambda e: [m.value for m in e],  # use the enum *values*
+            name="jobstate",
+            create_constraint=False,
+            values_callable=lambda e: [m.value for m in e],
         ),
         nullable=False,
         default=JobState.QUEUED,

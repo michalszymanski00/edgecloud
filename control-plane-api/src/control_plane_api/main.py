@@ -15,6 +15,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from prometheus_client import Counter
 from starlette_exporter import PrometheusMiddleware, handle_metrics
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from .db import (
     init_db, async_session,
@@ -29,29 +31,13 @@ app = FastAPI(title="Edge-Cloud Control Plane (v0.4+)")
 app.add_middleware(PrometheusMiddleware, app_name="edge_cloud_api", prefix="http")
 app.add_route("/metrics", handle_metrics)
 
-heartbeat_requests = Counter(
-    'api_heartbeat_requests_total',
-    'Total number of heartbeat requests',
-    ['device_id'],
-)
-workflow_requests = Counter(
-    'api_workflow_requests_total',
-    'Total number of workflow CRUD calls',
-    ['operation'],
-)
-log_requests = Counter(
-    'api_workflow_log_requests_total',
-    'Total number of workflow log calls',
-    ['operation'],
-)
-job_requests = Counter(
-    'api_job_requests_total',
-    'Job claim / update calls',
-    ['operation', 'device_id'],
-)
+heartbeat_requests = Counter('api_heartbeat_requests_total', 'Total number of heartbeat requests', ['device_id'])
+workflow_requests  = Counter('api_workflow_requests_total',  'Total number of workflow CRUD calls', ['operation'])
+log_requests       = Counter('api_workflow_log_requests_total','Total number of workflow log calls', ['operation'])
+job_requests       = Counter('api_job_requests_total',      'Job claim / update calls', ['operation','device_id'])
 
 # ── CORS ──────────────────────────────────────────────────────────────────
-origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+origins = os.getenv("CORS_ORIGINS","http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -61,53 +47,53 @@ app.add_middleware(
 )
 
 CA_CERT_PATH = "/certs/ca.crt"
-CA_KEY_PATH = "/certs/ca.key"
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+CA_KEY_PATH  = "/certs/ca.key"
+ADMIN_TOKEN  = os.getenv("ADMIN_TOKEN","")
 
-# ── Dependency: get a session ─────────────────────────────────────────────
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+# ── Dependency ─────────────────────────────────────────────────────────────
+async def get_session() -> AsyncGenerator[AsyncSession,None]:
     async with async_session() as sess:
         yield sess
 
 # ── Pydantic models ───────────────────────────────────────────────────────
 class HeartbeatIn(BaseModel):
     device_id: str
-    ts: datetime
+    ts:        datetime
 
 class DeviceOut(BaseModel):
-    id: str
-    last_seen: datetime
+    id:         str
+    last_seen:  datetime
 
 class CsrIn(BaseModel):
     device_id: str
-    csr_pem: str
+    csr_pem:   str
 
 class CertOut(BaseModel):
     cert_pem: str
-    ca_pem: str
+    ca_pem:   str
 
 class TokenIn(BaseModel):
     device_id: str
-    token: str
+    token:     str
 
-class TokenOut(TokenIn):
+class TokenOut(TokenIn): 
     pass
 
 class WorkflowIn(BaseModel):
-    name: str
+    name:       str
     definition: dict
-    schedule: Optional[str] = None
+    schedule:   Optional[str] = None
     recurrence: Optional[str] = None
 
 class WorkflowOut(WorkflowIn):
-    id: int
+    id:         int
     created_at: datetime
     updated_at: datetime
 
 class LogIn(BaseModel):
-    ts:       datetime
-    success:  bool
-    output:   Optional[str] = None
+    ts:      datetime
+    success: bool
+    output:  Optional[str] = None
 
 class LogOut(LogIn):
     id: int
@@ -116,121 +102,138 @@ class JobOut(BaseModel):
     id:          int
     workflow_id: int
     state:       JobState
-    payload:     dict | None = None
+    payload:     dict|None = None
 
 class JobUpdateIn(BaseModel):
     state:       JobState
-    result:      dict | None = None
-    error:       str  | None = None
-    started_at:  datetime | None = None
-    finished_at: datetime | None = None
+    result:      dict|None = None
+    error:       str|None  = None
+    started_at:  datetime|None = None
+    finished_at: datetime|None = None
 
-class JobDetail(BaseModel):
-    id:          int
-    workflow_id: int
-    state:       JobState
-    payload:     dict | None = None
-    result:      dict | None = None
-    error:       str  | None = None
-    started_at:  datetime | None = None
-    finished_at: datetime | None = None
+class JobDetail(JobOut):
+    result:      dict|None  = None
+    error:       str|None   = None
+    started_at:  datetime|None = None
+    finished_at: datetime|None = None
 
-# ── Bulk‐heartbeat models & helper ────────────────────────────────────────
 class HeartbeatItem(BaseModel):
     device_id: str
-    ts: datetime
+    ts:        datetime
 
 class BulkHeartbeatRequest(BaseModel):
     heartbeats: List[HeartbeatItem]
 
+# ── APScheduler setup ─────────────────────────────────────────────────────
+scheduler = AsyncIOScheduler()
+
+async def enqueue_workflow_job(workflow_id: int):
+    async with async_session() as sess:
+        wf = await sess.get(Workflow, workflow_id)
+        if not wf:
+            return
+        sess.add(Job(
+            device_id=wf.device_id,
+            workflow_id=workflow_id,
+            state=JobState.QUEUED,
+            payload={},
+        ))
+        await sess.commit()
+
+def schedule_cron_for(wf: Workflow):
+    job_id = f"wf-{wf.id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    if wf.schedule:
+        trigger = CronTrigger.from_crontab(wf.schedule)
+        scheduler.add_job(
+            enqueue_workflow_job,
+            trigger,
+            args=[wf.id],
+            id=job_id,
+            name=f"workflow {wf.id} ({wf.name})"
+        )
+
+# ── Shared helpers ────────────────────────────────────────────────────────
 async def _upsert_heartbeat(sess: AsyncSession, device_id: str, ts: datetime):
-    # upsert Device
     await sess.execute(
         insert(Device)
-        .values(id=device_id, last_seen=ts)
-        .on_conflict_do_update(
-            index_elements=[Device.id],
-            set_={"last_seen": ts},
-        )
+        .values(id=device_id,last_seen=ts)
+        .on_conflict_do_update(index_elements=[Device.id],set_={"last_seen":ts})
     )
-    # insert Heartbeat row
     await sess.execute(
         insert(Heartbeat)
-        .values(device_id=device_id, ts=ts)
+        .values(device_id=device_id,ts=ts)
     )
 
-# ── Seed default token ────────────────────────────────────────────────────
 async def seed_token_only():
     async with async_session() as sess:
         exists = (await sess.execute(select(DeviceToken).limit(1))).first()
         if not exists:
-            default = os.getenv("REG_TOKEN", "my-super-secret-token")
-            sess.add(DeviceToken(device_id="pi-01", token=default))
+            default = os.getenv("REG_TOKEN","my-super-secret-token")
+            sess.add(DeviceToken(device_id="pi-01",token=default))
             await sess.commit()
-
-# ── Startup tasks ────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def start_up() -> None:
-    if os.getenv("USE_CREATE_ALL", "") == "1":
-        await init_db()
-    else:
-        await seed_token_only()
-    asyncio.create_task(cert_expiry_scan())
 
 async def cert_expiry_scan():
     while True:
         cutoff = datetime.utcnow() + timedelta(days=30)
         async with async_session() as sess:
-            expiring = (
-                await sess.execute(
-                    select(IssuedCert).where(IssuedCert.not_after <= cutoff)
-                )
-            ).scalars().all()
+            expiring = (await sess.execute(
+                select(IssuedCert).where(IssuedCert.not_after<=cutoff)
+            )).scalars().all()
             for row in expiring:
                 logging.warning(
                     "CERT EXPIRING SOON: %s… device=%s expires=%s",
-                    row.fingerprint[:16],
-                    row.device_id,
-                    row.not_after,
+                    row.fingerprint[:16],row.device_id,row.not_after
                 )
-        await asyncio.sleep(24 * 3600)
+        await asyncio.sleep(24*3600)
 
-# ── Heartbeat single ─────────────────────────────────────────────────────
+# ── Single startup hook ──────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup():
+    # 1) DB init or seed
+    if os.getenv("USE_CREATE_ALL") == "1":
+        await init_db()
+    else:
+        await seed_token_only()
+
+    # 2) schedule existing workflows
+    async with async_session() as sess:
+        wfs = (await sess.execute(
+            select(Workflow).where(Workflow.schedule is not None)
+        )).scalars().all()
+        for wf in wfs:
+            schedule_cron_for(wf)
+
+    # 3) start scheduler
+    scheduler.start()
+
+    # 4) kick off cert‐expiry scanner
+    asyncio.create_task(cert_expiry_scan())
+
+# ── Heartbeat endpoints ───────────────────────────────────────────────────
 @app.post("/heartbeat")
-async def heartbeat(
-    hb: HeartbeatIn,
-    sess: AsyncSession = Depends(get_session),
-):
+async def heartbeat(hb: HeartbeatIn, sess: AsyncSession = Depends(get_session)):
     heartbeat_requests.labels(device_id=hb.device_id).inc()
     await _upsert_heartbeat(sess, hb.device_id, hb.ts)
     await sess.commit()
-    return {"status": "ok"}
+    return {"status":"ok"}
 
-# ── Heartbeat bulk ───────────────────────────────────────────────────────
 @app.post("/heartbeat/bulk", status_code=204)
 async def heartbeat_bulk(req: BulkHeartbeatRequest):
-    """
-    Accept a list of {device_id, ts} items and upsert each heartbeat
-    in a single transaction.
-    """
     async with async_session() as sess:
         async with sess.begin():
             for hb in req.heartbeats:
                 heartbeat_requests.labels(device_id=hb.device_id).inc()
                 await _upsert_heartbeat(sess, hb.device_id, hb.ts)
-    return
 
 # ── Fleet overview ───────────────────────────────────────────────────────
 @app.get("/devices", response_model=List[DeviceOut])
-async def list_devices(
-    sess: AsyncSession = Depends(get_session),
-):
-    rows = (
-        await sess.execute(
-            select(Device).order_by(Device.last_seen.desc())
-        )
-    ).scalars().all()
-    return [DeviceOut(id=r.id, last_seen=r.last_seen) for r in rows]
+async def list_devices(sess: AsyncSession = Depends(get_session)):
+    rows = (await sess.execute(
+        select(Device).order_by(Device.last_seen.desc())
+    )).scalars().all()
+    return [DeviceOut(id=r.id,last_seen=r.last_seen) for r in rows]
 
 # ── Device enrollment ─────────────────────────────────────────────────────
 @app.post("/register", response_model=CertOut)
@@ -379,6 +382,7 @@ async def create_workflow(
     sess.add(new)
     await sess.commit()
     await sess.refresh(new)
+    schedule_cron_for(new)
     return new
 
 @app.put(
@@ -404,6 +408,7 @@ async def update_workflow(
     ex.recurrence = wf.recurrence
     await sess.commit()
     await sess.refresh(ex)
+    schedule_cron_for(ex)
     return ex
 
 @app.delete(
@@ -424,6 +429,9 @@ async def delete_workflow(
         .where(Workflow.id == workflow_id, Workflow.device_id == device_id)
     )
     await sess.commit()
+    job_id = f"wf-{workflow_id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
 
 # ── Workflow Logs ────────────────────────────────────────────────────────
 @app.post(
@@ -504,7 +512,6 @@ async def claim_next_job(
     if not tok or tok.token != x_register_token:
         raise HTTPException(401, "invalid token")
 
-    # pull one queued job with row-lock, mark claimed, then commit
     stmt = (
         select(Job)
         .where(Job.device_id == device_id, Job.state == JobState.QUEUED)

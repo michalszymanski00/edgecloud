@@ -31,6 +31,7 @@ dev = [
   "cryptography",
   "prometheus_client",
   "starlette_exporter",
+  "apscheduler",
 ]
 
 [tool.setuptools]

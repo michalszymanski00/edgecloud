@@ -20,7 +20,8 @@
                 alembic \
                 psycopg2-binary \
                 prometheus_client \
-                starlette_exporter
+                starlette_exporter \
+                apscheduler
         
         # ---- copy application code ----
         COPY src/ /app/src/

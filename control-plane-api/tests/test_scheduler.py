@@ -2,13 +2,10 @@ import os
 import pytest
 import asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import select
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from control_plane_api.main import (
     app,
     scheduler,
-    schedule_cron_for,
     enqueue_workflow_job,
 )
 from control_plane_api.db import async_session, Workflow, Job
@@ -61,7 +58,7 @@ async def test_schedule_and_enqueue_job(client):
 
     # 4) now talk to /devices/pi-01/jobs/next
     got = await client.get(
-        f"/devices/pi-01/jobs/next",
+        "/devices/pi-01/jobs/next",
         headers={"X-Register-Token": "my-super-secret-token"},
     )
     assert got.status_code == 200
@@ -72,7 +69,7 @@ async def test_schedule_and_enqueue_job(client):
 
     # after claiming, there should be no more queued jobs
     no_more = await client.get(
-        f"/devices/pi-01/jobs/next",
+        "/devices/pi-01/jobs/next",
         headers={"X-Register-Token": "my-super-secret-token"},
     )
     assert no_more.status_code == 200

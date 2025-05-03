@@ -1,4 +1,24 @@
-control-plane-api/.venv
-api-certs
-certs
-device-certs
+# --- Python -------------------------------------------------
+.venv*/          # local virtual-envs
+venv*/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# --- Node / Next.js ----------------------------------------
+dashboard/node_modules/
+dashboard/.next/
+dashboard/dist/
+
+# --- build & runtime artefacts ------------------------------
+dist/
+build/
+*.log
+
+# --- certificates & secrets --------------------------------
+certs/
+api-certs/
+device-certs/
+
+# --- binaries ----------------------------------------------
+agent/edge-agent-linux-*

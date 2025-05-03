@@ -8,6 +8,7 @@ from control_plane_api.main import (
     scheduler,
     enqueue_workflow_job,
 )
+
 # make sure your env is set for in‑memory DB, etc.
 os.environ["USE_CREATE_ALL"] = "1"
 os.environ["ADMIN_TOKEN"]    = "my-super-secret-token"
@@ -22,7 +23,8 @@ async def setup_db():
         await asyncio.sleep(0.1)
     yield
 
-@pytest.fixture
+# Mark the client fixture with the async fixture decorator
+@pytest_asyncio.fixture
 async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:

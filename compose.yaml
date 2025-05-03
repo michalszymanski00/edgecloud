@@ -1,8 +1,7 @@
 version: "3.9"
 
-services: # Top-level key
-
-  db: # Service definition, indented under services
+services:
+  db:
     image: postgres:17
     environment:
       POSTGRES_USER: edge
@@ -15,10 +14,11 @@ services: # Top-level key
       interval: 3s
       timeout: 2s
       retries: 5
-    networks:
-      - default
+    networks: # Add db to the network
+      - app-network
+    restart: unless-stopped # Good practice
 
-  api: # Service definition, same level as db
+  api:
     build: ./control-plane-api
     env_file: ./control-plane-api/.env
     environment:
@@ -56,68 +56,50 @@ services: # Top-level key
       interval: 5s
       timeout: 3s
       retries: 5
-    networks:
-      - default
-      - monitoring_net
+    networks: # Add api to the network
+      - app-network
+    restart: unless-stopped # Good practice
 
-  prometheus: # Service definition, same level as api, db
-    image: prom/prometheus:v2.52.0
-    user: "0:0" # Run as root to fix volume permissions
+  # --- NEW SERVICES ---
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    volumes:
+      # Mount your Prometheus config (see next section)
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus # Persist Prometheus data
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus/data"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
-      - "--web.enable-lifecycle"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/rules:/etc/prometheus/rules:ro
-      - prometheus-data:/prometheus/data
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
     ports:
-      - "9090:9090"
+      - "9090:9090" # Access Prometheus UI
     networks:
-      monitoring_net:
-        aliases:
-          - prometheus
+      - app-network # Connect to the same network
     restart: unless-stopped
 
-  alertmanager:
-    image: prom/alertmanager:v0.27.0
-    # Comment out the original command to prevent Alertmanager from starting/crashing
-    command:
-     - "--config.file=/etc/alertmanager/config.yml"
-     - "--storage.path=/alertmanager"
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
     volumes:
-      - ./monitoring/alertmanager.yml:/etc/alertmanager/config.yml:ro
-      - alertmanager_data:/alertmanager
+      # Mount Grafana datasource config (see section after next)
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yaml
+      - grafana-data:/var/lib/grafana # Persist Grafana data
     ports:
-        - "9093:9093"
+      - "3001:3000" # Access Grafana UI
     networks:
-      - monitoring_net
+      - app-network # Connect to the same network
+    environment: # Optional: set default credentials
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=password
     restart: unless-stopped
+  # --- END NEW SERVICES ---
 
-
-  grafana: # Service definition, same level as alertmanager
-    image: grafana/grafana:10.4.3 # Using specific version from previous file
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: "changeme"
-    ports:
-      - "3001:3000" # Using specific port from previous file
-    networks:
-      - monitoring_net
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning/:/etc/grafana/provisioning/:ro
-    restart: unless-stopped
-
-volumes: # Top-level key, same level as services
+volumes:
   pgdata:
-  prometheus-data:
-  alertmanager_data:
-  grafana_data:
+  prometheus_data: {} # Define persistent volume for Prometheus
+  grafana-data: {} # Define persistent volume for Grafana
 
-networks: # Top-level key, same level as services
-  default:
-  monitoring_net:
+networks: # Define the explicit network
+  app-network:
     driver: bridge
-

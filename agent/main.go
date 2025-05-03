@@ -475,7 +475,16 @@ func main() {
 	}
 
 	// cron scheduler
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional)
+	parser := cron.NewParser(
+		// allow optional seconds (for "@every 20s"), standard 5 fields, and descriptors like "@every"
+		cron.SecondOptional |
+			cron.Minute |
+			cron.Hour |
+			cron.Dom |
+			cron.Month |
+			cron.Dow |
+			cron.Descriptor,
+	)
 	c := cron.New(cron.WithParser(parser))
 	c.Start()
 	defer c.Stop()

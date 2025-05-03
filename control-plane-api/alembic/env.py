@@ -9,7 +9,7 @@ import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
-from sqlalchemy.engine import url as sa_url
+from sqlalchemy.engine.url import make_url, URL
 
 cfg = context.config
 
@@ -20,21 +20,22 @@ if cfg.config_file_name is not None:
 # ── 1) Guarantee DATABASE_URL (async) -------------------------------------
 ini_url = cfg.get_main_option("sqlalchemy.url")  # value from alembic.ini
 if "DATABASE_URL" not in os.environ and ini_url:
-    # If the ini URL is already async, great; otherwise upgrade it.
     if ini_url.startswith("postgresql://"):
         async_url = ini_url.replace("postgresql://", "postgresql+asyncpg://", 1)
     else:
         async_url = ini_url
-    os.environ["DATABASE_URL"] = async_url   # db.py will read this
+    os.environ["DATABASE_URL"] = async_url   # control_plane_api.db will read this
 
-# ── 2) Patch *Alembic’s* URL back to sync ---------------------------------
-def _patch_async_url() -> None:
-    raw = cfg.get_main_option("sqlalchemy.url")
-    if raw and raw.startswith("postgresql+asyncpg://"):
-        parsed = sa_url.make_url(raw).set(drivername="postgresql")
-        cfg.set_main_option("sqlalchemy.url", str(parsed))
+# ── 2) Force Alembic itself to use a *sync* URL ----------------------------
+def _sync_url(u: str) -> str:
+    url_obj: URL = make_url(u)
+    if url_obj.drivername.endswith("+asyncpg"):
+        url_obj = url_obj.set(drivername="postgresql")
+    return url_obj.render_as_string(hide_password=False)
 
-_patch_async_url()
+# Override whatever is in alembic.ini with our DATABASE_URL (syncified)
+sync_url = _sync_url(os.environ["DATABASE_URL"])
+cfg.set_main_option("sqlalchemy.url", sync_url)
 
 # ── 3) Import metadata after env-var is set -------------------------------
 from control_plane_api.db import Base  # noqa: E402
@@ -52,7 +53,6 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
-
 def run_migrations_online() -> None:
     connectable = engine_from_config(
         cfg.get_section(cfg.config_ini_section, {}),
@@ -63,7 +63,6 @@ def run_migrations_online() -> None:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
-
 
 if context.is_offline_mode():
     run_migrations_offline()

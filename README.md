@@ -93,6 +93,47 @@ Today we designed and built an end-to-end **Edge-Cloud control plane** alongside
 
 ---
 
+## 6. Database migrations  (Alembic)
+
+The project carries **two Docker images that embed the migrations code**:
+
+| image | purpose |
+|-------|---------|
+| **`edgecloud-migrations`** | one-shot; runs `alembic upgrade head` at start-up and then exits (Compose service `migrations`) |
+| **`edgecloud-api`**        | long-running API; it *also* bundles the `alembic/` folder so we can inspect history from inside the container |
+
+### 6.1  Daily workflow in **DEV**
+
+> **Tip:** a tiny helper target lives in *docker-compose.yml*  
+> (builds the temp image, mounts source, opens a shell).
+
+```bash
+# Start Postgres once
+docker compose up -d db
+
+# Open an interactive shell with alembic+sources
+docker compose run --rm mig-dev        # <— defined in compose
+# you are now at /app inside the temp container
+alembic revision --autogenerate -m "add foo column"
+alembic upgrade head                   # prove it works
+exit
+
+# rebuild the one-shot migrations image
+docker compose build --no-cache migrations
+
+# let it run once, do its job, then recreate api
+docker compose up -d --build migrations api
+
+# migrations image (one-off)
+docker compose run --rm migrations alembic current
+# ⇒ 012345deadbeef (head)
+
+# api container (long-running)
+docker compose exec api alembic current
+# ⇒ 012345deadbeef (head)
+
+
+
 ## How to Run Everything
 
 ```bash

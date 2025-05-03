@@ -11,37 +11,36 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter
 from starlette_exporter import PrometheusMiddleware, handle_metrics
 
 from .db import (
     init_db, async_session,
     Device, Heartbeat,
-    DeviceToken, IssuedCert, Workflow, WorkflowLog,
+    DeviceToken, IssuedCert,
+    Workflow, WorkflowLog,
+    Job, JobState,
 )
 
+# ────────────────────────── FastAPI & metrics ────────────────────────────
 app = FastAPI(title="Edge-Cloud Control Plane (v0.4+)")
 app.add_middleware(PrometheusMiddleware, app_name="edge_cloud_api", prefix="http")
 app.add_route("/metrics", handle_metrics)
 
-# Custom metrics
-heartbeat_requests = Counter(
-    'api_heartbeat_requests_total',
-    'Total number of heartbeat requests',
-    ['device_id']
-)
-workflow_requests = Counter(
-    'api_workflow_requests_total',
-    'Total number of workflow CRUD calls',
-    ['operation']
-)
-log_requests = Counter(
-    'api_workflow_log_requests_total',
-    'Total number of workflow log calls',
-    ['operation']
-)
+heartbeat_requests = Counter('api_heartbeat_requests_total',
+                             'Total number of heartbeat requests',
+                             ['device_id'])
+workflow_requests  = Counter('api_workflow_requests_total',
+                             'Total number of workflow CRUD calls',
+                             ['operation'])
+log_requests       = Counter('api_workflow_log_requests_total',
+                             'Total number of workflow log calls',
+                             ['operation'])
+job_requests       = Counter('api_job_requests_total',
+                             'Job claim / update calls',
+                             ['operation', 'device_id'])
 
-# ─── CORS ────────────────────────────────────────────────────────────────
+# ────────────────────────────── CORS ─────────────────────────────────────
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -55,7 +54,7 @@ CA_CERT_PATH = "/certs/ca.crt"
 CA_KEY_PATH  = "/certs/ca.key"
 ADMIN_TOKEN  = os.getenv("ADMIN_TOKEN", "")
 
-# ─── Pydantic models ─────────────────────────────────────────────────────
+# ─────────────────────── Pydantic models ────────────────────────────────
 class HeartbeatIn(BaseModel):
     device_id: str
     ts: datetime
@@ -96,12 +95,26 @@ class LogIn(BaseModel):
     output:   Optional[str] = None
 
 class LogOut(LogIn):
-    id:       int
+    id: int
+
+# ─── jobs ────────────────────────────────────────────────────────────────
+class JobOut(BaseModel):
+    id:          int
+    workflow_id: int
+    state:       JobState
+    payload:     dict | None = None
+
+class JobUpdateIn(BaseModel):
+    state:       JobState
+    result:      dict | None = None
+    error:       str  | None = None
+    started_at:  datetime | None = None
+    finished_at: datetime | None = None
+
 # ─── Helper: seed default token (Alembic-managed schema) ────────────────
 async def seed_token_only():
     async with async_session() as sess:
-        res = await sess.execute(select(DeviceToken).limit(1))
-        if res.first() is None:
+        if (await sess.execute(select(DeviceToken).limit(1))).first() is None:
             default = os.getenv("REG_TOKEN", "my-super-secret-token")
             sess.add(DeviceToken(device_id="pi-01", token=default))
             await sess.commit()
@@ -125,13 +138,11 @@ async def cert_expiry_scan():
                 )
             ).scalars().all()
             for row in expiring:
-                logging.warning(
-                    "CERT EXPIRING SOON: %s… device=%s expires=%s",
-                    row.fingerprint[:16], row.device_id, row.not_after
-                )
+                logging.warning("CERT EXPIRING SOON: %s… device=%s expires=%s",
+                                row.fingerprint[:16], row.device_id, row.not_after)
         await asyncio.sleep(24 * 3600)
 
-# ─── Heartbeat ────────────────────────────────────────────────────────────
+# ─────────────────────────── Heartbeat ───────────────────────────────────
 @app.post("/heartbeat")
 async def heartbeat(hb: HeartbeatIn):
     heartbeat_requests.labels(device_id=hb.device_id).inc()
@@ -146,15 +157,12 @@ async def heartbeat(hb: HeartbeatIn):
         await sess.commit()
     return {"status": "ok"}
 
-# ─── Fleet overview ───────────────────────────────────────────────────────
+# ────────────────────────── Fleet overview ──────────────────────────────
 @app.get("/devices", response_model=List[DeviceOut])
 async def list_devices():
     async with async_session() as sess:
-        rows = (
-            await sess.execute(
-                select(Device).order_by(Device.last_seen.desc())
-            )
-        ).scalars().all()
+        rows = (await sess.execute(select(Device).order_by(Device.last_seen.desc()))
+               ).scalars().all()
         return [DeviceOut(id=r.id, last_seen=r.last_seen) for r in rows]
 
 # ─── /register (device enrollment) ────────────────────────────────────────
@@ -406,3 +414,62 @@ async def list_logs(
             success=r.success,
             output=r.output,
         ) for r in rows]
+    
+@app.get("/devices/{device_id}/jobs/next", response_model=JobOut | None)
+async def claim_next_job(
+    device_id: str,
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
+):
+    job_requests.labels(operation="claim", device_id=device_id).inc()
+
+    # token check
+    async with async_session() as sess:
+        tok = await sess.get(DeviceToken, device_id)
+        if not tok or tok.token != x_register_token:
+            raise HTTPException(401, "invalid token")
+
+    async with async_session() as sess:
+        async with sess.begin():
+            stmt = (select(Job)
+                    .where(Job.device_id == device_id, Job.state == JobState.QUEUED)
+                    .order_by(Job.created_at)
+                    .with_for_update(skip_locked=True)
+                    .limit(1))
+            job = (await sess.scalars(stmt)).first()
+            if job is None:
+                return None
+            job.state = JobState.CLAIMED
+            job.claimed_at = datetime.utcnow()
+            await sess.flush()
+            return JobOut(id=job.id,
+                          workflow_id=job.workflow_id,
+                          state=job.state,
+                          payload=job.payload)
+
+@app.patch("/jobs/{job_id}", status_code=204)
+async def update_job(
+    job_id: int,
+    patch: JobUpdateIn,
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
+):
+    async with async_session() as sess:
+        job = await sess.get(Job, job_id)
+        if not job:
+            raise HTTPException(404, "job not found")
+
+        job_requests.labels(operation="update", device_id=job.device_id).inc()
+
+        tok = await sess.get(DeviceToken, job.device_id)
+        if not tok or tok.token != x_register_token:
+            raise HTTPException(401, "invalid token")
+
+        job.state       = patch.state
+        job.result      = patch.result
+        job.error       = patch.error
+        job.started_at  = patch.started_at or job.started_at
+        job.finished_at = (patch.finished_at or
+                           (datetime.utcnow() if patch.state in (
+                               JobState.SUCCEEDED,
+                               JobState.FAILED,
+                               JobState.CANCELED) else None))
+        await sess.commit()

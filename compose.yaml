@@ -17,6 +17,23 @@ services:
     networks: # Add db to the network
       - app-network
     restart: unless-stopped # Good practice
+  migrations:
+    build: ./control-plane-api
+    env_file: ./control-plane-api/.env
+    command: ["alembic", "upgrade", "head"]   # <— COMMENT REMOVED
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [app-network]
+
+  mig-dev:
+    extends: migrations                 # reuse the same image
+    command: [ "bash" ]                 # give us a shell
+    volumes:
+      # write new revision files back into the working tree
+      - ./control-plane-api/alembic/versions:/app/alembic/versions
+    networks: [app-network]
+    profiles: ["tools"]                 # so it never runs on `up`
 
   api:
     build: ./control-plane-api
@@ -24,13 +41,12 @@ services:
     environment:
       REG_TOKEN: "my-super-secret-token"
       ADMIN_TOKEN: "my-super-secret-token"
-      USE_CREATE_ALL: 1
+    depends_on:
+      migrations:
+        condition: service_completed_successfully   # wait until alembic passed
     ports:
       - "8443:8443"
       - "8444:8444"
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - ./certs/ca.crt:/certs/ca.crt:ro
       - ./api-certs/api.crt:/api-certs/api.crt:ro
@@ -39,6 +55,7 @@ services:
       - /bin/sh
       - -c
       - |
+        set -e
         uvicorn control_plane_api.main:app \
           --host 0.0.0.0 --port 8443 \
           --ssl-keyfile /api-certs/api.key \
@@ -46,7 +63,7 @@ services:
           --ssl-ca-certs /certs/ca.crt \
           --ssl-cert-reqs 1 &
 
-        uvicorn control_plane_api.main:app \
+        exec uvicorn control_plane_api.main:app \
           --host 0.0.0.0 --port 8444 \
           --ssl-keyfile /api-certs/api.key \
           --ssl-certfile /api-certs/api.crt \
@@ -56,9 +73,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    networks: # Add api to the network
-      - app-network
-    restart: unless-stopped # Good practice
+    networks: [app-network]
+    restart: unless-stopped
 
   # --- NEW SERVICES ---
   prometheus:

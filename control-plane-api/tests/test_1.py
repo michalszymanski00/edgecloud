@@ -62,23 +62,25 @@ async def test_token_crud(client):
     resp = await client.get("/tokens", headers={"X-Admin-Token": "wrong"})
     assert resp.status_code == 401
 
-    # Authorized fetch (empty)
+    # Authorized fetch (pre-seeded token only)
     resp = await client.get("/tokens", headers={"X-Admin-Token": "admintok"})
     assert resp.status_code == 200
     tokens = resp.json()
+    # the seeder creates a default pi-01 token
     assert any(t["device_id"] == "pi-01" for t in tokens)
 
-    # Upsert token
-    tok = {"device_id": "d1", "token": "tok1"}
-    resp = await client.post("/tokens", json=tok, headers={"X-Admin-Token": "admintok"})
+    # Upsert a new token
+    new_tok = {"device_id": "d1", "token": "tok1"}
+    resp = await client.post("/tokens", json=new_tok, headers={"X-Admin-Token": "admintok"})
     assert resp.status_code == 201
 
-    # Fetch back
+    # Fetch back and verify
     resp = await client.get("/tokens", headers={"X-Admin-Token": "admintok"})
     assert resp.status_code == 200
-    assert ("d1","tok1") in tokens
+    tokens = resp.json()
+    assert any(t["device_id"] == "d1" and t["token"] == "tok1" for t in tokens)
 
-    # Delete token
+    # Delete the token
     resp = await client.delete("/tokens/d1", headers={"X-Admin-Token": "admintok"})
     assert resp.status_code == 204
 

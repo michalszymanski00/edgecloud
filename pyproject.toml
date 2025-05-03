@@ -22,6 +22,9 @@ dev = [
   "ruff",
   "mypy",
   "psycopg2-binary",
+  "httpx",
+  "pytest-asyncio",
+  "aiosqlite"
 ]
 
 [tool.setuptools]

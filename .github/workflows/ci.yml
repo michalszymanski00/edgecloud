@@ -1,42 +1,49 @@
 name: CI
+
 on:
-  push:        { branches: [main] }
-  pull_request:{ branches: [main] }
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
-  PY_VER: "3.12"             # usable in steps
-  # PG_VER stays only as documentation now
+  PY_VER: "3.12"          # used later in setup-python
 
 jobs:
+  # ──────────────── 1. Lint / type-check ────────────────
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: ${{ env.PY_VER }} }
+        with:
+          python-version: ${{ env.PY_VER }}
 
       - name: Install tooling
         run: |
           python -m pip install --upgrade pip
           pip install ruff mypy
 
-      - run: ruff check .
-        name: Ruff (lint)
+      - name: Ruff (lint)
+        run: ruff check .
 
-      - run: mypy control-plane-api/src tests
-        name: MyPy
+      - name: MyPy (types)
+        run: mypy control-plane-api/src tests
 
+  # ──────────────── 2. Tests + migrations ───────────────
   tests:
     runs-on: ubuntu-latest
 
     services:
       postgres:
-        image: postgres:17            # 👈  fixed
+        image: postgres:17
         env:
           POSTGRES_USER:     edge
           POSTGRES_PASSWORD: edgepass
           POSTGRES_DB:       edgecloud
-        ports: [ "5432:5432" ]
+        ports:
+          - "5432:5432"
         options: >-
           --health-cmd="pg_isready -U edge -d edgecloud"
           --health-interval=3s
@@ -48,10 +55,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: ${{ env.PY_VER }} }
 
-      - name: Install project (+dev)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PY_VER }}
+
+      - name: Install project (+dev extras)
         run: |
           python -m pip install --upgrade pip
           pip install -e "control-plane-api[dev]"
@@ -60,7 +69,7 @@ jobs:
         working-directory: control-plane-api
         run: alembic upgrade head
 
-      - name: Migration round-trip
+      - name: Migration round-trip (down & up)
         working-directory: control-plane-api
         run: |
           head=$(alembic current | awk '{print $1}')

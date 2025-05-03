@@ -125,6 +125,16 @@ class JobUpdateIn(BaseModel):
     started_at:  datetime | None = None
     finished_at: datetime | None = None
 
+class JobDetail(BaseModel):
+    id:          int
+    workflow_id: int
+    state:       JobState
+    payload:     dict | None = None
+    result:      dict | None = None
+    error:       str  | None = None
+    started_at:  datetime | None = None
+    finished_at: datetime | None = None
+
 # ── Bulk‐heartbeat models & helper ────────────────────────────────────────
 class HeartbeatItem(BaseModel):
     device_id: str
@@ -494,20 +504,22 @@ async def claim_next_job(
     if not tok or tok.token != x_register_token:
         raise HTTPException(401, "invalid token")
 
-    async with sess.begin():
-        stmt = (
-            select(Job)
-            .where(Job.device_id == device_id, Job.state == JobState.QUEUED)
-            .order_by(Job.created_at)
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-        job = (await sess.scalars(stmt)).first()
-        if not job:
-            return None
-        job.state = JobState.CLAIMED
-        job.claimed_at = datetime.utcnow()
+    # pull one queued job with row-lock, mark claimed, then commit
+    stmt = (
+        select(Job)
+        .where(Job.device_id == device_id, Job.state == JobState.QUEUED)
+        .order_by(Job.created_at)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    job = (await sess.scalars(stmt)).first()
+    if not job:
+        return None
+
+    job.state = JobState.CLAIMED
+    job.claimed_at = datetime.utcnow()
     await sess.commit()
+
     return JobOut(
         id=job.id,
         workflow_id=job.workflow_id,
@@ -547,3 +559,32 @@ async def update_job(
         )
     )
     await sess.commit()
+
+@app.get(
+    "/jobs/{job_id}",
+    response_model=JobDetail,
+    summary="Fetch a job by ID",
+)
+async def get_job(
+    job_id: int,
+    x_register_token: str = Header(..., alias="X-Register-Token"),
+    sess: AsyncSession = Depends(get_session),
+):
+    job = await sess.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+
+    tok = await sess.get(DeviceToken, job.device_id)
+    if not tok or tok.token != x_register_token:
+        raise HTTPException(401, "invalid token")
+
+    return JobDetail(
+        id=job.id,
+        workflow_id=job.workflow_id,
+        state=job.state,
+        payload=job.payload,
+        result=job.result,
+        error=job.error,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+    )

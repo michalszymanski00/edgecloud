@@ -1,6 +1,5 @@
 import os
 import pytest
-from datetime import datetime
 from httpx import AsyncClient
 
 from control_plane_api.main import app
@@ -87,7 +86,7 @@ async def test_workflow_crud(client):
     assert resp.status_code == 201
 
     # Create workflow
-    wf_data = {"name": "w1", "definition": {"foo": "bar"}, "schedule": null, "recurrence": null}
+    wf_data = {"name": "w1", "definition": {"foo": "bar"}, "schedule": None, "recurrence": None}
     resp = await client.post(
         "/devices/d2/workflows", json=wf_data,
         headers={"X-Register-Token": "tok2"}
@@ -104,7 +103,7 @@ async def test_workflow_crud(client):
     assert any(w["id"] == wf_id for w in resp.json())
 
     # Update workflow
-    update_data = {"name": "w1u", "definition": {"foo": "baz"}, "schedule": null, "recurrence": null}
+    update_data = {"name": "w1u", "definition": {"foo": "baz"}, "schedule": None, "recurrence": None}
     resp = await client.put(
         f"/devices/d2/workflows/{wf_id}", json=update_data,
         headers={"X-Register-Token": "tok2"}

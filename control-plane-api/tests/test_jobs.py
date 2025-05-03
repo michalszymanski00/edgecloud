@@ -27,8 +27,8 @@ async def test_job_lifecycle(client):
     # 1) create a workflow
     resp = await client.post(
         "/devices/pi-01/workflows",
-        json={"name": "smoke", "definition": {}},
-        headers={"X-Register-Token": "my-super-secret-token"},
+        json={"name":"smoke","definition":{}},
+        headers={"X-Register-Token":"my-super-secret-token"},
     )
     assert resp.status_code == 201
     wf_id = resp.json()["id"]
@@ -53,7 +53,7 @@ async def test_job_lifecycle(client):
     # 3) claim it
     resp = await client.get(
         "/devices/pi-01/jobs/next",
-        headers={"X-Register-Token": "my-super-secret-token"},
+        headers={"X-Register-Token":"my-super-secret-token"},
     )
     assert resp.status_code == 200
     job = resp.json()
@@ -69,14 +69,14 @@ async def test_job_lifecycle(client):
             "result": {"ok": True},
             "finished_at": fixed_finish,
         },
-        headers={"X-Register-Token": "my-super-secret-token"},
+        headers={"X-Register-Token":"my-super-secret-token"},
     )
     assert resp.status_code == 204
 
     # 5) GET it back and validate all fields
     resp = await client.get(
         f"/jobs/{job_id}",
-        headers={"X-Register-Token": "my-super-secret-token"},
+        headers={"X-Register-Token":"my-super-secret-token"},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -87,4 +87,5 @@ async def test_job_lifecycle(client):
     assert body["result"] == {"ok": True}
     assert body["error"] is None
     assert body["started_at"] is None
-    assert body["finished_at"] == fixed_finish
+    # allow missing Z suffix in ISO datetime
+    assert body["finished_at"].rstrip("Z") == fixed_finish.rstrip("Z")

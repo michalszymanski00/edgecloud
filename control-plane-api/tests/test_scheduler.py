@@ -1,6 +1,7 @@
 import os
 import pytest
 import asyncio
+import pytest_asyncio  # Ensure this import is added
 from httpx import AsyncClient, ASGITransport
 
 from control_plane_api.main import (

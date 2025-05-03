@@ -23,6 +23,7 @@ dev = [
   "pytest",
   "ruff",
   "mypy",
+  "psycopg2-binary",
 ]
 
 # ───── Tell setuptools how to find the *Python* code ─────

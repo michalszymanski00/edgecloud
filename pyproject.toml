@@ -12,6 +12,7 @@ dependencies = [
   "fastapi==0.110.1",
   "uvicorn[standard]==0.29.0",
   "asyncpg>=0.30.0",
+  "cryptography>=40.0.0",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,8 @@ dev = [
   "psycopg2-binary",
   "httpx",
   "pytest-asyncio",
-  "aiosqlite"
+  "aiosqlite",
+  "cryptography",
 ]
 
 [tool.setuptools]

@@ -79,6 +79,21 @@ class Workflow(Base):
 
     device = relationship("Device", back_populates="workflows")
 
+class WorkflowLog(Base):
+    __tablename__ = "workflow_logs"
+    id:         Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id:  Mapped[str]      = mapped_column(String, index=True)
+    workflow_id:Mapped[int]      = mapped_column(Integer, index=True)
+    ts:         Mapped[datetime] = mapped_column(
+        SA_DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    success:    Mapped[bool]     = mapped_column(nullable=False)
+    output:     Mapped[str]      = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_workflow_logs_device_wf", "device_id", "workflow_id"),
+    )
 # ── initialize / seed -------------------------------------------------------
 async def init_db(retries: int = 5, delay: float = 2.0):
     """Create tables; retry while Postgres is still booting and seed default token."""

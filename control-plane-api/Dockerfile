@@ -18,7 +18,9 @@
                 asyncpg==0.29.0 \
                 cryptography==42.0.5 \
                 alembic \
-                psycopg2-binary
+                psycopg2-binary \
+                prometheus_client \
+                starlette_exporter
         
         # ---- copy application code ----
         COPY src/ /app/src/
@@ -27,11 +29,9 @@
         # ---- copy Alembic config & migrations ----
         COPY alembic.ini  /app/alembic.ini
         COPY alembic/     /app/alembic/
-
         
         # ---- default expose ----
         EXPOSE 8443 8444
         
         # ---- entrypoint: run migrations then start app ----
-        CMD ["sh", "-c", "alembic upgrade head && uvicorn control_plane_api.main:app --host 0.0.0.0 --port 8443"]
-        
+        CMD ["sh", "-c", "alembic upgrade head && uvicorn control_plane_api.main:app --host 0.0.0.0 --port 8443"]        

@@ -11,14 +11,35 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from prometheus_client import Counter, Histogram
+from starlette_exporter import PrometheusMiddleware, handle_metrics
 
 from .db import (
     init_db, async_session,
     Device, Heartbeat,
-    DeviceToken, IssuedCert, Workflow
+    DeviceToken, IssuedCert, Workflow, WorkflowLog,
 )
 
 app = FastAPI(title="Edge-Cloud Control Plane (v0.4+)")
+app.add_middleware(PrometheusMiddleware, app_name="edge_cloud_api", prefix="http")
+app.add_route("/metrics", handle_metrics)
+
+# Custom metrics
+heartbeat_requests = Counter(
+    'api_heartbeat_requests_total',
+    'Total number of heartbeat requests',
+    ['device_id']
+)
+workflow_requests = Counter(
+    'api_workflow_requests_total',
+    'Total number of workflow CRUD calls',
+    ['operation']
+)
+log_requests = Counter(
+    'api_workflow_log_requests_total',
+    'Total number of workflow log calls',
+    ['operation']
+)
 
 # ─── CORS ────────────────────────────────────────────────────────────────
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -69,6 +90,13 @@ class WorkflowOut(WorkflowIn):
     created_at: datetime
     updated_at: datetime
 
+class LogIn(BaseModel):
+    ts:       datetime
+    success:  bool
+    output:   Optional[str] = None
+
+class LogOut(LogIn):
+    id:       int
 # ─── Helper: seed default token (Alembic-managed schema) ────────────────
 async def seed_token_only():
     async with async_session() as sess:
@@ -81,12 +109,10 @@ async def seed_token_only():
 # ─── Startup ─────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def start_up() -> None:
-    # choose create_all (dev) or Alembic + seed
     if os.getenv("USE_CREATE_ALL", "") == "1":
         await init_db()
     else:
         await seed_token_only()
-    # expiry checker
     asyncio.create_task(cert_expiry_scan())
 
 async def cert_expiry_scan():
@@ -108,6 +134,7 @@ async def cert_expiry_scan():
 # ─── Heartbeat ────────────────────────────────────────────────────────────
 @app.post("/heartbeat")
 async def heartbeat(hb: HeartbeatIn):
+    heartbeat_requests.labels(device_id=hb.device_id).inc()
     async with async_session() as sess:
         dev = await sess.get(Device, hb.device_id)
         if not dev:
@@ -310,3 +337,72 @@ async def delete_workflow(
               .where(Workflow.id == workflow_id, Workflow.device_id == device_id)
         )
         await sess.commit()
+
+# ─── Workflow Logs ───────────────────────────────────────────────────────
+@app.post(
+    "/devices/{device_id}/workflows/{workflow_id}/logs",
+    status_code=201,
+    response_model=LogOut,
+)
+async def create_log(
+    device_id: str,
+    workflow_id: int,
+    log: LogIn,
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
+):
+    log_requests.labels(operation='create').inc()
+    # verify token
+    async with async_session() as sess:
+        tok = await sess.get(DeviceToken, device_id)
+        if not tok or tok.token != x_register_token:
+            raise HTTPException(401, "invalid token")
+
+        entry = WorkflowLog(
+            device_id=device_id,
+            workflow_id=workflow_id,
+            ts=log.ts,
+            success=log.success,
+            output=log.output,
+        )
+        sess.add(entry)
+        await sess.commit()
+        await sess.refresh(entry)
+        return LogOut(
+            id=entry.id,
+            ts=entry.ts,
+            success=entry.success,
+            output=entry.output,
+        )
+
+@app.get(
+    "/devices/{device_id}/workflows/{workflow_id}/logs",
+    response_model=List[LogOut],
+)
+async def list_logs(
+    device_id: str,
+    workflow_id: int,
+    x_register_token: str | None = Header(None, alias="X-Register-Token"),
+):
+    log_requests.labels(operation='list').inc()
+    # verify token
+    async with async_session() as sess:
+        tok = await sess.get(DeviceToken, device_id)
+        if not tok or tok.token != x_register_token:
+            raise HTTPException(401, "invalid token")
+
+        rows = (
+            await sess.execute(
+                select(WorkflowLog)
+                .where(
+                    WorkflowLog.device_id == device_id,
+                    WorkflowLog.workflow_id == workflow_id,
+                )
+                .order_by(WorkflowLog.ts.desc())
+            )
+        ).scalars().all()
+        return [LogOut(
+            id=r.id,
+            ts=r.ts,
+            success=r.success,
+            output=r.output,
+        ) for r in rows]

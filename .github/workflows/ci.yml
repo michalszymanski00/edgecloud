@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 env:
   PY_VER: "3.12"
@@ -23,7 +21,7 @@ jobs:
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Add pip user‐bin to PATH
+      - name: Add pip user-bin to PATH
         run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
 
       - name: Install linters
@@ -45,11 +43,10 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER:     edge
+          POSTGRES_USER: edge
           POSTGRES_PASSWORD: edgepass
-          POSTGRES_DB:       edgecloud
-        ports:
-          - "5432:5432"
+          POSTGRES_DB: edgecloud
+        ports: ["5432:5432"]
         options: >-
           --health-cmd="pg_isready -U edge -d edgecloud"
           --health-interval=3s
@@ -67,25 +64,31 @@ jobs:
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Add pip user‐bin to PATH
+      - name: Add pip user-bin to PATH
         run: echo "${HOME}/.local/bin" >> $GITHUB_PATH
 
-      - name: Install control-plane-api & dev tools
+      - name: Install project & dev deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          # bring in alembic + psycopg2 so sync driver works
+          pip install -e ".[dev]" psycopg2-binary
 
       - name: Bootstrap schema from models
         working-directory: control-plane-api
         run: |
           python - <<'PY'
           import os
-          from sqlalchemy import create_engine
+          from sqlalchemy import create_engine, text
           from control_plane_api.db import Base
-          # strip asyncpg so create_engine uses psycopg2
-          url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
-          engine = create_engine(url)
+          # drop asyncpg suffix so we get psycopg2
+          sync_url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
+          engine = create_engine(sync_url)
+          # create all tables (with current model)
           Base.metadata.create_all(engine)
+          # revert the two columns that Alembic will add
+          with engine.begin() as conn:
+              conn.execute(text("ALTER TABLE workflows DROP COLUMN IF EXISTS schedule"))
+              conn.execute(text("ALTER TABLE workflows DROP COLUMN IF EXISTS recurrence"))
           PY
 
       - name: Run Alembic migrations (upgrade to head)

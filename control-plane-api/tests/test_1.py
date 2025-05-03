@@ -1,17 +1,17 @@
 import os
+# ───────────────────────────────────────────────
+# MUST set these *before* importing your app!
+os.environ["USE_CREATE_ALL"]  = "1"
+os.environ["ADMIN_TOKEN"]     = "admintok"
+os.environ["DATABASE_URL"]    = "sqlite+aiosqlite:///:memory:"
+# ───────────────────────────────────────────────
+
 import pytest_asyncio
 import pytest
 from httpx import AsyncClient
-from httpx._transports.asgi import ASGITransport
 
 from control_plane_api.main import app
-from control_plane_api.db import init_db
-
-# Ensure these environment variables before app startup
-os.environ["USE_CREATE_ALL"] = "1"
-os.environ["ADMIN_TOKEN"] = "admintok"
-# Database URL for in-memory SQLite (tests only)
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+from control_plane_api.db   import init_db
 
 @pytest_asyncio.fixture(scope="module", autouse=True)
 async def setup_db():

@@ -12,6 +12,9 @@ dependencies = [
   "fastapi==0.110.1",
   "uvicorn[standard]==0.29.0",
   "asyncpg>=0.30.0",
+  "cryptography>=40.0.0",
+  "prometheus_client>=0.17.0",
+  "starlette_exporter>=0.22.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +25,12 @@ dev = [
   "ruff",
   "mypy",
   "psycopg2-binary",
+  "httpx",
+  "pytest-asyncio",
+  "aiosqlite",
+  "cryptography",
+  "prometheus_client",
+  "starlette_exporter",
 ]
 
 [tool.setuptools]

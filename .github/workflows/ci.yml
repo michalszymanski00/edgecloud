@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  PY_VER: "3.12"          # used later in setup-python
+  PY_VER: "3.12"
 
 jobs:
   # ──────────────── 1. Lint / type-check ────────────────
@@ -16,20 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Install tooling
+      - name: Install project & tooling
         run: |
           python -m pip install --upgrade pip
-          pip install SQLAlchemy asyncpg alembic pytest ruff mypy
-          pip install -e ./control-plane-api
-      
-      - name: Show pip list & which alembic (debug)
-        run: |
-          pip list
-          which alembic
+          pip install -e ./control-plane-api[dev]
 
       - name: Ruff (lint)
         run: ruff check .
@@ -40,7 +35,6 @@ jobs:
   # ──────────────── 2. Tests + migrations ───────────────
   tests:
     runs-on: ubuntu-latest
-
     services:
       postgres:
         image: postgres:17
@@ -62,16 +56,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PY_VER }}
 
-      - name: Install control-plane-api + dev tools
+      - name: Install project & tooling
         run: |
           python -m pip install --upgrade pip
-          pip install -e "./control-plane-api[dev]"
+          pip install -e ./control-plane-api[dev]
 
-      - name: Run Alembic migrations
+      - name: Apply all migrations
         working-directory: control-plane-api
         run: alembic upgrade head
 
@@ -82,5 +77,5 @@ jobs:
           alembic downgrade -1
           alembic upgrade "$head"
 
-      - name: Pytest
+      - name: Run tests
         run: pytest -q

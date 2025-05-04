@@ -1,7 +1,6 @@
-// src/components/RealTimeDashboard.tsx
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import DashboardCard from './DashboardCard';
 import TrendChart from './TrendChart';
 import { Cpu, Wifi, WifiOff, Clock, AlertTriangle } from 'lucide-react';
@@ -13,6 +12,8 @@ type Expiry = { expired: number; expiring_soon: number };
 export default function RealTimeDashboard() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [expiry, setExpiry] = useState<Expiry>({ expired: 0, expiring_soon: 0 });
+  const wsRef = useRef<WebSocket | null>(null);  // WebSocket reference
+  const reconnectIntervalRef = useRef<NodeJS.Timeout | null>(null);  // Reference for retry interval
 
   // 1) Initial load
   useEffect(() => {
@@ -27,30 +28,62 @@ export default function RealTimeDashboard() {
       console.error('Missing NEXT_PUBLIC_WS_URL');
       return;
     }
-    const ws = new WebSocket(url);
-
-    ws.onopen = () => console.log('WS connected to', url);
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.devices) setDevices(msg.devices);
-        if (msg.expiry) setExpiry(msg.expiry);
-      } catch (err) {
-        console.error('WS payload parse error', err);
-      }
+  
+    const createWebSocket = () => {
+      const ws = new WebSocket(url);
+  
+      ws.onopen = () => {
+        console.log('WS connected to', url);
+        console.log('WS readyState on open:', ws.readyState); // Log readyState when the connection opens
+      };
+  
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.devices) setDevices(msg.devices);
+          if (msg.expiry) setExpiry(msg.expiry);
+        } catch (err) {
+          console.error('WS payload parse error', err);
+        }
+      };
+  
+      ws.onerror = (ev) => {
+        console.error('WebSocket error event:', ev);
+        console.log('WS readyState after error:', ws.readyState); // Log readyState after the error occurs
+  
+        // Check if ev is an instance of ErrorEvent
+        if (ev instanceof ErrorEvent) {
+          console.error('Error message:', ev.message);
+          console.error('Error filename:', ev.filename);
+          console.error('Error lineno:', ev.lineno);
+        } else {
+          console.error('Error event does not contain a detailed error');
+        }
+  
+        // Attempt reconnect if WebSocket fails
+        console.log('Attempting to reconnect...');
+        setTimeout(createWebSocket, 5000);  // Attempt to reconnect after 5 seconds
+      };
+  
+      ws.onclose = (ev) => {
+        console.log('WS closed with code:', ev.code, 'and reason:', ev.reason);
+        console.log('WS readyState after close:', ws.readyState); // Log readyState after the connection closes
+  
+        // Attempt reconnect if WebSocket is closed
+        console.log('Attempting to reconnect...');
+        setTimeout(createWebSocket, 5000);  // Attempt to reconnect after 5 seconds
+      };
+  
+      return ws;
     };
-    ws.onerror = (ev) => {
-      console.error('WebSocket error event:', ev);
-      console.log('WS readyState is', ws.readyState);
-    };
-    ws.onclose = (ev) => {
-      console.log('WS closed:', ev.code, ev.reason);
-    };
-
+  
+    const ws = createWebSocket();
+  
     return () => {
+      console.log('Closing WebSocket connection');
       ws.close();
     };
-  }, []);
+  }, []);  
 
   // 3) Derive metrics
   const total = devices.length;

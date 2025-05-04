@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Cpu, Settings, Bell } from 'lucide-react';
+import { Home, Cpu, Settings, Bell, FileText } from 'lucide-react';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: <Home size={18} /> },
   { href: '/devices', label: 'Devices', icon: <Cpu size={18} /> },
+  { href: '/workflows', label: 'Workflows', icon: <FileText size={18} /> }, // Add this line
   { href: '/alerts', label: 'Alerts', icon: <Bell size={18} /> },
   { href: '/settings', label: 'Settings', icon: <Settings size={18} /> },
 ];

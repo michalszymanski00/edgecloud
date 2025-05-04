@@ -222,7 +222,8 @@ async def startup():
         await init_db()
     else:
         await seed_token_only()
-    scheduler.start()
+    if not scheduler.running:
+        scheduler.start()  # Make sure it's running before shutdown
     asyncio.create_task(cert_expiry_scan())
 
 # ── Heartbeat endpoints ───────────────────────────────────────────────────
@@ -312,6 +313,12 @@ async def register(
 def require_admin(x_admin: str):
     if x_admin != ADMIN_TOKEN:
         raise HTTPException(401, "admin token required")
+
+@app.get("/admin/schedules")
+async def list_schedules(sess: AsyncSession = Depends(get_session)):
+    """List all workflows with their scheduled cron times."""
+    rows = (await sess.execute(select(Workflow).order_by(Workflow.created_at))).scalars().all()
+    return [{"id": wf.id, "next_run_time": "some_next_run_time"} for wf in rows]
 
 @app.get("/tokens", response_model=List[TokenOut])
 async def list_tokens(

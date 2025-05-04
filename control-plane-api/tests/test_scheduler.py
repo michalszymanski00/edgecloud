@@ -1,5 +1,6 @@
 import os
 import pytest
+import pytest_asyncio
 import asyncio
 from httpx import AsyncClient, ASGITransport
 from control_plane_api.main import app, scheduler, enqueue_workflow_job

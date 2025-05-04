@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, List, Optional
 import re
 
@@ -126,7 +126,8 @@ class BulkHeartbeatRequest(BaseModel):
     heartbeats: List[HeartbeatItem]
 
 # ── APScheduler setup ─────────────────────────────────────────────────────
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(event_loop=asyncio.get_event_loop())
+
 def start_scheduler_if_not_running():
     if not scheduler.running:
         scheduler.start()
@@ -206,7 +207,7 @@ async def seed_token_only():
 
 async def cert_expiry_scan():
     while True:
-        cutoff = datetime.utcnow() + timedelta(days=30)
+        cutoff = datetime.now(timezone.utc) + timedelta(days=30)
         async with async_session() as sess:
             expiring = (await sess.execute(
                 select(IssuedCert).where(IssuedCert.not_after<=cutoff)
@@ -218,21 +219,26 @@ async def cert_expiry_scan():
                 )
         await asyncio.sleep(24*3600)
 
-# ── Single startup hook ──────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup():
+async def lifespan(app: FastAPI):
+    # Startup logic
     if os.getenv("USE_CREATE_ALL") == "1":
         await init_db()
     else:
         await seed_token_only()
     start_scheduler_if_not_running()
     asyncio.create_task(cert_expiry_scan())
+    yield
+    # Shutdown logic
+    await shutdown()
 
 # ── Graceful Shutdown ────────────────────────────────────────────────────
-@app.on_event("shutdown")
 async def shutdown():
     if scheduler.running:
         scheduler.shutdown()
+
+# ── Datetime update ──────────────────────────────────────────────────────
+def current_time():
+    return datetime.now(timezone.utc)
 
 # ── Heartbeat endpoints ───────────────────────────────────────────────────
 @app.post("/heartbeat")
@@ -290,8 +296,8 @@ async def register(
         .issuer_name(ca_cert.subject)
         .public_key(csr.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.utcnow() - timedelta(minutes=1))
-        .not_valid_after(datetime.utcnow() + timedelta(days=730))
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=730))
         .add_extension(
             x509.SubjectAlternativeName(
                 [x509.DNSName(payload.device_id)]
@@ -558,7 +564,7 @@ async def claim_next_job(
         return None
 
     job.state = JobState.CLAIMED
-    job.claimed_at = datetime.utcnow()
+    job.claimed_at = datetime.now(timezone.utc)
     await sess.commit()
 
     return JobOut(
@@ -590,7 +596,7 @@ async def update_job(
     job.finished_at = (
         patch.finished_at
         or (
-            datetime.utcnow()
+            datetime.now(timezone.utc)
             if patch.state in (
                 JobState.SUCCEEDED,
                 JobState.FAILED,

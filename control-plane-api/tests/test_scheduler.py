@@ -130,10 +130,11 @@ async def test_error_handling_and_retries(client):
 @pytest.mark.asyncio
 async def test_graceful_shutdown():
     """Test graceful shutdown of the scheduler."""
-    
+
+    # Ensure the event loop is running and scheduler is started
     loop = asyncio.get_event_loop()
-    
-    # Check if the loop is closed, and create a new one if necessary
+
+    # If the loop is closed, create a new one
     if loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -146,8 +147,9 @@ async def test_graceful_shutdown():
     assert scheduler.running
     
     # Shut down gracefully
-    await shutdown()  # Use the shutdown function from main.py
+    await shutdown()  # This should now use the shutdown function from main.py
     
     # Assert that the scheduler has stopped
     assert not scheduler.running
+
 

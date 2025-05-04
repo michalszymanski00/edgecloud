@@ -1,5 +1,3 @@
-'use client';
-
 import React from 'react';
 import {
   ResponsiveContainer,
@@ -11,40 +9,52 @@ import {
   CartesianGrid,
 } from 'recharts';
 
+interface Interval {
+  timestamp: string;
+  count: number;
+}
+
 interface TrendChartProps {
-  data: { timestamp: string; count: number }[];
+  data: Interval[];
 }
 
 export default function TrendChart({ data }: TrendChartProps) {
+  // Format timestamps to simple HH:MM labels
+  const formatted = data.map((d) => ({
+    time: new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    count: d.count,
+  }));
+
   return (
-    <div className="bg-white shadow rounded-lg p-5">
-      <h2 className="text-lg font-medium text-gray-900 mb-4">Conn. Trends (1h)</h2>
-      <ResponsiveContainer width="100%" height={150}>
-        <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" />
+    <div className="w-full h-60">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={formatted} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="4 4" stroke="#e5e7eb" />
           <XAxis
-            dataKey="timestamp"
-            tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: 'numeric' })}
-            axisLine={false}
+            dataKey="time"
+            tick={{ fontSize: 12, fill: '#6b7280' }}
+            axisLine={{ stroke: '#d1d5db' }}
             tickLine={false}
-            interval="preserveStartEnd"
           />
           <YAxis
             allowDecimals={false}
-            axisLine={false}
+            tick={{ fontSize: 12, fill: '#6b7280' }}
+            axisLine={{ stroke: '#d1d5db' }}
             tickLine={false}
-            width={20}
+            width={30}
           />
           <Tooltip
-            labelFormatter={(ts) => new Date(ts).toLocaleString()}
-            formatter={(val: number) => [`${val}`, 'Devices']}
+            labelFormatter={(label) => `Time: ${label}`}
+            formatter={(value: any) => [`${value}`, 'Count']}
+            contentStyle={{ borderRadius: 4, borderColor: '#d1d5db' }}
           />
           <Line
             type="monotone"
             dataKey="count"
             stroke="#3b82f6"
-            dot={false}
             strokeWidth={2}
+            dot={{ r: 3, fill: '#3b82f6' }}
+            activeDot={{ r: 5 }}
           />
         </LineChart>
       </ResponsiveContainer>

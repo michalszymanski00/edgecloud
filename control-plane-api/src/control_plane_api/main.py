@@ -18,6 +18,7 @@ from prometheus_client import Counter
 from starlette_exporter import PrometheusMiddleware, handle_metrics
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from fastapi import WebSocket, WebSocketDisconnect
 
 from .db import (
     init_db, async_session,
@@ -315,6 +316,67 @@ async def register(
     await sess.commit()
 
     return CertOut(cert_pem=cert_pem, ca_pem=ca_pem)
+
+@app.get("/admin/certs/expiring")
+async def get_cert_expiry_counts(
+    x_admin_token: str = Header(..., alias="X-Admin-Token"),
+    sess: AsyncSession = Depends(get_session),
+):
+    # reuse your ADMIN_TOKEN check
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(401, "admin token required")
+
+    now    = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=30)
+
+    # count already expired
+    expired_q = await sess.execute(
+        select(IssuedCert).where(IssuedCert.not_after < now)
+    )
+    expired = len(expired_q.scalars().all())
+
+    # count expiring in next 30 days (inclusive)
+    soon_q = await sess.execute(
+        select(IssuedCert).where(IssuedCert.not_after >= now, IssuedCert.not_after <= cutoff)
+    )
+    expiring_soon = len(soon_q.scalars().all())
+
+    return {"expired": expired, "expiring_soon": expiring_soon}
+
+@app.websocket("/ws/heartbeats")
+async def ws_heartbeats(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            # fetch devices
+            async with async_session() as sess:
+                rows = (await sess.execute(
+                    select(Device).order_by(Device.last_seen.desc())
+                )).scalars().all()
+                devs = [
+                    {"id": r.id, "last_seen": r.last_seen.isoformat()}
+                    for r in rows
+                ]
+                # cert expiry
+                now = datetime.now(timezone.utc)
+                cutoff = now + timedelta(days=30)
+                expired_q = await sess.execute(
+                    select(IssuedCert).where(IssuedCert.not_after < now)
+                )
+                expiring_q = await sess.execute(
+                    select(IssuedCert).where(IssuedCert.not_after >= now, IssuedCert.not_after <= cutoff)
+                )
+                payload = {
+                  "devices": devs,
+                  "expiry": {
+                    "expired": len(expired_q.scalars().all()),
+                    "expiring_soon": len(expiring_q.scalars().all()),
+                  }
+                }
+            await ws.send_json(payload)
+            await asyncio.sleep(10)  # broadcast every 10s
+    except WebSocketDisconnect:
+        pass
 
 # ── Admin‐only token CRUD ──────────────────────────────────────────────────
 def require_admin(x_admin: str):

@@ -108,9 +108,8 @@ async def test_persist_scheduled_jobs(client):
     # Instead of shutting down and restarting, simulate a restart by re-initializing the scheduler
     # This would normally happen in the app itself, we can rely on this behavior.
 
-    # This line is important to ensure the test doesn't rely on shutdown manually.
-    loop = asyncio.get_event_loop()
-    scheduler.start(event_loop=loop)
+    # No need for event_loop in scheduler.start()
+    scheduler.start()  # Let the scheduler manage its own loop
 
     # Verify the job is still registered
     assert scheduler.get_job(job_id) is not None

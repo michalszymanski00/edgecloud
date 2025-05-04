@@ -127,6 +127,9 @@ class BulkHeartbeatRequest(BaseModel):
 
 # ── APScheduler setup ─────────────────────────────────────────────────────
 scheduler = AsyncIOScheduler()
+def start_scheduler_if_not_running():
+    if not scheduler.running:
+        scheduler.start()
 
 async def enqueue_workflow_job(workflow_id: int):
     async with async_session() as sess:
@@ -222,9 +225,14 @@ async def startup():
         await init_db()
     else:
         await seed_token_only()
-    if not scheduler.running:
-        scheduler.start()  # Make sure it's running before shutdown
+    start_scheduler_if_not_running()
     asyncio.create_task(cert_expiry_scan())
+
+# ── Graceful Shutdown ────────────────────────────────────────────────────
+@app.on_event("shutdown")
+async def shutdown():
+    if scheduler.running:
+        scheduler.shutdown()
 
 # ── Heartbeat endpoints ───────────────────────────────────────────────────
 @app.post("/heartbeat")

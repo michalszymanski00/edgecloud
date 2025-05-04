@@ -108,8 +108,9 @@ async def test_persist_scheduled_jobs(client):
     # Simulate a restart by reinitializing the scheduler
     scheduler.shutdown()
     
-    # Restart the scheduler by creating a new instance with an active event loop
-    scheduler.start(event_loop=asyncio.get_event_loop())
+    # Reinitialize the event loop and the scheduler
+    loop = asyncio.get_event_loop()
+    scheduler.start(event_loop=loop)
 
     # Verify the job is still registered
     assert scheduler.get_job(job_id) is not None

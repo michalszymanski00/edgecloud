@@ -147,12 +147,8 @@ async def enqueue_workflow_job(workflow_id: int):
 
 def validate_cron_expression(cron: str):
     """ Validate the cron expression to ensure it's in the correct format. """
-    # A simple regex for basic cron validation (5 fields)
     cron_regex = re.compile(r'^[\*\/0-9,\-]+ [\*\/0-9,\-]+ [\*\/0-9,\-]+ [\*\/0-9,\-]+ [\*\/0-9,\-]+$')
-    
-    # Check for valid cron expressions
     if not cron_regex.match(cron):
-        # If the expression is invalid (e.g., '@every 20s'), raise an error
         raise HTTPException(
             status_code=400,
             detail=f"Invalid cron expression: {cron}"
@@ -164,7 +160,6 @@ def schedule_cron_for(wf: Workflow):
         scheduler.remove_job(job_id)
     
     if wf.schedule:
-        # Validate the cron expression before scheduling
         validate_cron_expression(wf.schedule)
         
         cron_fields = wf.schedule.split()
@@ -181,9 +176,7 @@ def schedule_cron_for(wf: Workflow):
             except ValueError as e:
                 logging.error(f"Error parsing cron expression for workflow {wf.id}: {e}")
         else:
-            # Log a warning if the cron expression is invalid
             logging.warning(f"Invalid cron expression for workflow {wf.id}: {wf.schedule}")
-
 
 # ── Shared helpers ────────────────────────────────────────────────────────
 async def _upsert_heartbeat(sess: AsyncSession, device_id: str, ts: datetime):

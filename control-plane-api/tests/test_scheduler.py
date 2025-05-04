@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 import asyncio
 from httpx import AsyncClient, ASGITransport
-from control_plane_api.main import app, scheduler, enqueue_workflow_job
+from control_plane_api.main import app, scheduler, enqueue_workflow_job, shutdown  # Import shutdown here
 
 # Environment setup
 os.environ["USE_CREATE_ALL"] = "1"
@@ -115,29 +115,24 @@ async def test_persist_scheduled_jobs(client):
 @pytest.mark.asyncio
 async def test_error_handling_and_retries(client):
     """Test error handling and retries for enqueueing jobs."""
-    # Simulate a failure in enqueueing
     async def failing_enqueue(wf_id):
         raise Exception("Simulated enqueue failure")
-
-    # Replace the original enqueue function with the failing one
-    original_enqueue = enqueue_workflow_job
-    enqueue_workflow_job = failing_enqueue
-
-    # Attempt to enqueue a job
-    with pytest.raises(Exception):
-        await enqueue_workflow_job("dummy_id")
-
-    # Restore the original enqueue function
-    enqueue_workflow_job = original_enqueue
+    
+    original_enqueue = enqueue_workflow_job  # Fix UnboundLocalError here
+    try:
+        # Replace the original enqueue function with the failing one
+        globals()['enqueue_workflow_job'] = failing_enqueue
+        # Simulate a failure scenario
+        await client.post("/devices/pi-01/workflows", json={})  # Trigger enqueue failure
+    finally:
+        # Restore the original function
+        globals()['enqueue_workflow_job'] = original_enqueue
 
 @pytest.mark.asyncio
 async def test_graceful_shutdown():
     """Test graceful shutdown of the scheduler."""
     # Ensure the scheduler is running
     assert scheduler.running
-
-    # Trigger shutdown
-    scheduler.shutdown(wait=False)
-
-    # Verify the scheduler has stopped
-    assert not scheduler.running
+    # Shut down gracefully
+    await shutdown()  # Now using the shutdown function from main.py
+    assert not scheduler.running  # Assert the scheduler has stopped

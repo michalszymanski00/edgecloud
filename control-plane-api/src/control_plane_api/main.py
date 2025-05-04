@@ -325,7 +325,34 @@ def require_admin(x_admin: str):
 async def list_schedules(sess: AsyncSession = Depends(get_session)):
     """List all workflows with their scheduled cron times."""
     rows = (await sess.execute(select(Workflow).order_by(Workflow.created_at))).scalars().all()
-    return [{"id": wf.id, "next_run_time": "some_next_run_time"} for wf in rows]
+
+    schedules = []
+    now = datetime.now(timezone.utc) # Get current time once outside the loop for efficiency
+
+    for wf in rows:
+        schedule_info = {
+            "id": wf.id,
+            "name": wf.name,
+            "schedule": wf.schedule or "Not Scheduled",
+            "next_run_time": "Not Scheduled" # Default value
+        }
+        if wf.schedule:
+            try:
+                trigger = CronTrigger.from_crontab(wf.schedule)
+                # Pass None for previous_fire_time and the current time for now
+                next_run_time = trigger.get_next_fire_time(None, now) # FIX: Pass None as the first argument
+
+                if next_run_time:
+                    schedule_info["next_run_time"] = next_run_time.isoformat()
+                # If next_run_time is None, it remains "Not Scheduled"
+            except ValueError as e:
+                logging.error(f"Error parsing cron expression for workflow {wf.id}: {e}")
+                schedule_info["next_run_time"] = "Invalid cron expression"
+
+        schedules.append(schedule_info)
+
+    return schedules
+
 
 @app.get("/tokens", response_model=List[TokenOut])
 async def list_tokens(

@@ -152,5 +152,15 @@ async def test_graceful_shutdown():
     # Assert that the scheduler has stopped
     assert not scheduler.running
 
+@pytest.mark.asyncio
+async def test_list_schedules(client):
+    """Test listing workflows with cron schedules."""
+    # Make sure you create some workflows with valid cron expressions
+    resp = await client.get("/admin/schedules")
+    assert resp.status_code == 200
+    schedules = resp.json()
+    for schedule in schedules:
+        assert "next_run_time" in schedule
+
 
 

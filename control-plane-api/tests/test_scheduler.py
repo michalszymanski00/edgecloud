@@ -146,6 +146,3 @@ async def test_graceful_shutdown():
     
     # Assert the scheduler has stopped
     assert not scheduler.running
-
-
-

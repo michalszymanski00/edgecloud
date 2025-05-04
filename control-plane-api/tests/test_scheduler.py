@@ -136,7 +136,7 @@ async def test_graceful_shutdown():
         if loop.is_closed():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        scheduler.start(event_loop=loop)
+        scheduler.start()  # Start the scheduler without event_loop argument
     
     # Ensure the scheduler is running before attempting shutdown
     assert scheduler.running
@@ -146,5 +146,6 @@ async def test_graceful_shutdown():
     
     # Assert the scheduler has stopped
     assert not scheduler.running
+
 
 
